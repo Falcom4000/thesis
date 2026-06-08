@@ -1,33 +1,101 @@
 \chapter{Implementation}
 \label{chap:implementation}
 
+This chapter describes the system design of RapidGS. The implementation is not only a collection of CUDA kernels. It is a training system for a dynamic set of Gaussian primitives, where rendering, backward propagation, optimizer state, density-control statistics, pruning state, and memory layout must remain aligned.
+
 \section{Training Pipeline}
 
-The implementation separates Python-side training orchestration from CUDA-side Gaussian execution. Python owns the training loop, camera sampling, ground-truth image access, RGB loss computation, and high-level configuration. CUDA owns Gaussian parameter tensors, rasterization buffers, Adam moments, densification statistics, pruning helpers, and dynamic state synchronization.
+The implementation separates Python-side orchestration from CUDA-side Gaussian execution. Python owns the training loop, camera sampling, ground-truth image access, RGB loss computation, configuration, logging, and evaluation hooks. CUDA owns Gaussian parameter tensors, rasterization buffers, Adam moments, densification statistics, pruning helpers, and dynamic state synchronization.
 
-In a normal training step, the renderer projects Gaussians, generates compact tile instances, sorts them by tile and depth, and blends tile-local primitive lists into an RGB image. PyTorch computes the L1 and DSSIM loss and obtains the image-space gradient. The custom autograd bridge then forwards this gradient to CUDA, where Gaussian gradients and Adam updates are computed in the same backend path.
+In a normal training step, the renderer projects Gaussians into the selected view, generates compact tile instances, sorts instances by tile and depth, and blends tile-local primitive lists into an RGB image. PyTorch computes the L1 and DSSIM loss and obtains the image-space gradient. A custom autograd bridge forwards this gradient to CUDA, where Gaussian gradients and Adam updates are computed in the same backend path.
 
-\section{Densification Statistics}
+This boundary keeps the high-level training loop readable while avoiding the most expensive general-purpose optimizer path. The Python side still sees a rendered image and a scalar loss. The CUDA side sees the image gradient and the current Gaussian state. The division is narrow enough to reduce framework overhead but wide enough to preserve ordinary loss construction and evaluation code.
+
+\section{Python/CUDA Boundary}
+
+The central boundary quantity is
+\begin{equation}
+\mathbf{g}_{\mathrm{img}}
+=
+\frac{\partial \mathcal{L}_{\mathrm{rgb}}}
+{\partial \hat{\mathbf{I}}_v}.
+\end{equation}
+This tensor has the same image-space shape as the rendered RGB output. It is the only derivative that PyTorch needs to pass into the specialized Gaussian backend during the normal training step.
+
+After receiving $\mathbf{g}_{\mathrm{img}}$, the CUDA backend reconstructs the chain of dependencies from pixels to Gaussians. It accumulates color, opacity, conic, projected-mean, covariance, rotation, scale, and position gradients. The backend then applies Adam updates to the corresponding parameter tensors and moment tensors. From Python's perspective, the rendered image participates in an ordinary autograd graph. From CUDA's perspective, the Gaussian model is an aligned per-primitive data structure rather than a collection of unrelated tensors.
+
+This design also clarifies what the fused backend does not do. It does not change the loss function, and it does not replace RGB supervision with a custom objective. It changes where the per-Gaussian derivative propagation and optimizer update are executed.
+
+\section{Fused Backward and Adam Update}
+
+The standard optimizer path materializes per-parameter `.grad' tensors and then calls a general optimizer. This works for many neural networks, but 3DGS has millions of parameter rows that share the same Gaussian identity. The fused backend exploits this structure by computing gradients and updating Adam moments in the same CUDA-side state layout.
+
+For each Gaussian parameter $\theta_i$, Adam maintains first and second moments:
+\begin{equation}
+\mathbf{m}_i \leftarrow \beta_1\mathbf{m}_i + (1-\beta_1)\nabla_{\theta_i}\mathcal{L},
+\end{equation}
+\begin{equation}
+\mathbf{v}_i \leftarrow \beta_2\mathbf{v}_i + (1-\beta_2)(\nabla_{\theta_i}\mathcal{L})^2.
+\end{equation}
+The parameter update is then applied in place using the active learning-rate schedule for the corresponding parameter group. The key implementation point is that the moments are rows in the same per-Gaussian system as the parameters. If a Gaussian is cloned, split, pruned, or reordered, its moment rows must follow the same operation.
+
+The training log may therefore report little or no separate optimizer time. This does not mean that optimization is absent. It means the optimizer work is included in the fused backward/update path.
+
+\section{Densification Statistics Side Output}
 
 Densification requires a signal that indicates local structure pressure. In the fused backend, this signal is accumulated as a side output of the CUDA backward pass rather than by reading a PyTorch `.grad' field. For visible Gaussians, the backend accumulates view-space 2D mean gradient statistics and observation counts. At a densification interval, the callback reads normalized statistics and combines them with multi-view score render results.
 
-The implementation maintains signed and absolute variants of the 2D gradient statistic. Clone decisions use a signed-gradient statistic, while split decisions can use an absolute-gradient statistic. After the densification window ends, the backend can skip densification-statistics accumulation because no later callback consumes it.
+The implementation maintains signed and absolute variants of the 2D gradient statistic. Clone decisions use a signed-gradient statistic, while split decisions can use an absolute-gradient statistic. This separation allows the same backward pass to support different structural actions without exposing all intermediate gradients to Python.
+
+After the densification window ends, the backend can skip densification-statistics accumulation because no later callback consumes it. This is a small but important systems detail: statistics should be computed only while they have a downstream user.
+
+\section{Score-Render Path}
+
+The score-render path is a low-frequency auxiliary path used by structure editing. It samples a small set of training views, renders or reuses predictions, computes high-error masks from RGB residuals, and runs a metric-count contribution pass. The output is a per-Gaussian score indicating how often each Gaussian effectively contributes to high-error pixels.
+
+The score path is deliberately separated from the ordinary training step. Running it every iteration would be too expensive. Running it only at structure-edit clocks makes its cost easier to amortize. The number of sampled score views is therefore a budget parameter: more views can improve multi-view stability, but they also increase callback time.
+
+The implementation treats the score as temporary structure-control evidence, not as a trainable parameter. After the edit decision is made, the score can be discarded or reset. This avoids adding persistent state that would have to be maintained through every mutation.
+
+\section{Compact Tile-Instance Generation}
+
+Rasterization begins by determining which Gaussians should be considered by which screen-space tiles. The compact path first computes projected Gaussian information such as screen-space center, conic parameters, opacity, and candidate bounds. It then tests candidate tiles to determine whether the Gaussian can produce an effective alpha contribution within the tile.
+
+The result is an instance list containing only Gaussian-tile pairs that pass the contribution test. This list is then sorted and consumed by the ordinary tile-local blending and backward kernels. Skipped instances do not enter sort, forward blend, or backward accumulation.
+
+The contribution test is a preprocessing optimization, not a change to the blending equation. It should agree with the alpha cutoff used by the renderer. If it is too loose, runtime savings are small. If it is too aggressive, weak but meaningful contributions may be removed. The selected configuration uses a conservative setting that improves speed while preserving the current quality target.
 
 \section{Dynamic State Maintenance}
 
-The Gaussian set is dynamic. Clone and split append new entries, while pruning removes entries. Therefore every structural mutation must update all aligned per-Gaussian arrays together: means, scales, rotations, opacities, SH coefficients, Adam moments, densification statistics, pruning counters, and sorting or cache helpers. A key implementation rule is that a structural edit is not complete until parameter tensors and optimizer state have the same indexing.
+The Gaussian set is dynamic. Clone and split append new entries, while pruning removes entries. Therefore every structural mutation must update all aligned per-Gaussian arrays together: means, scales, rotations, opacities, SH coefficients, Adam moments, densification statistics, pruning counters, and sorting or cache helpers. A structural edit is not complete until parameter tensors and optimizer state have the same indexing.
 
-The implementation also supports Morton ordering as a periodic memory-reordering operation. Morton ordering does not change any Gaussian value or rendering equation. It permutes the storage order so that spatially nearby Gaussians are more likely to have nearby memory indices, improving locality in projection, tile-instance generation, backward propagation, and optimizer update.
+This alignment requirement is a common source of subtle bugs. A parameter row can be visually plausible while its Adam moments belong to a different Gaussian after pruning or sorting. RapidGS avoids this by treating append, mask, and permutation operations as whole-state operations over the Gaussian system.
 
-\section{Default Configuration}
+Split replacement is handled with the same rule. When a parent Gaussian is split, children are appended with initialized parameters and optimizer state. If the parent is later removed, all of its aligned state is removed together. The operation changes the set of active primitives but should not leave stale moments or counters behind.
 
-The current main baseline is the `fastergsfusedrapid-v0.5.0' configuration. Its important settings are:
+\section{Morton Ordering and Locality}
+
+Repeated densification appends new Gaussians to the end of tensor storage, even when the new children are spatially close to their parents. Over time, spatially nearby primitives can become scattered in memory. Morton ordering periodically reorders Gaussians by a space-filling curve so that nearby positions tend to have nearby indices.
+
+Morton ordering is a permutation:
+\begin{equation}
+\Theta'_i=\Theta_{\pi(i)},
+\quad
+\mathbf{m}'_i=\mathbf{m}_{\pi(i)},
+\quad
+\mathbf{v}'_i=\mathbf{v}_{\pi(i)}.
+\end{equation}
+It does not change the Gaussian set or any rendering equation. It only changes storage order. The expected benefit is better locality for projection, tile-instance generation, gradient accumulation, and optimizer updates.
+
+\section{Configuration and Runtime Accounting}
+
+The current main configuration uses COLMAP/SfM initialization, a short quality-constrained schedule, compact tile-instance generation, a small score-view budget, and disabled optional external Gaussian initialization. Its important settings are summarized in Table~\ref{tab:main-config}.
 
 \begin{table}[H]
 \centering
 \caption{Current main configuration.}
 \label{tab:main-config}
-\begin{tabular}{lll}
+\begin{tabular}{p{0.27\linewidth}p{0.18\linewidth}p{0.42\linewidth}}
 \toprule
 Setting & Value & Role \\
 \midrule
@@ -35,14 +103,12 @@ Initialization & COLMAP/SfM & Matches optimization-style 3DGS baselines \\
 Iterations & 23k & Quality-constrained short schedule \\
 Compact box multiplier & 0.75 & Reduces low-contribution tile work \\
 Score views & 5 & Lowers multi-view score-render overhead \\
-AnySplat initialization & disabled & Not required for the main result \\
+External Gaussian initialization & disabled & Not required for the main result \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 The default evaluation reports training time, wall time, PSNR, SSIM, paper-style VGG LPIPS, and final Gaussian count. Any optional initializer must report its initialization time separately from the subsequent 3DGS training loop.
-
-\section{Runtime Accounting}
 
 For a training step with $N$ Gaussians, $M$ effective Gaussian-tile instances, and $P$ pixels, the dominant cost can be viewed as
 \begin{equation}
@@ -54,6 +120,6 @@ For a training step with $N$ Gaussians, $M$ effective Gaussian-tile instances, a
 +
 \mathcal{C}_{\mathrm{adam}}(N).
 \end{equation}
-FasterGSFusedRapid reduces this cost through complementary mechanisms. Structure control limits the growth of $N$ and indirectly $M$. Compact rasterization directly reduces $M$. The fused backend combines backward propagation and Adam update, reducing gradient materialization and optimizer dispatch overhead. A short schedule reduces the number of times this step cost is paid.
+RapidGS reduces this cost through complementary mechanisms. Structure control limits the growth of $N$ and indirectly $M$. Compact rasterization directly reduces $M$. The fused backend combines backward propagation and Adam update, reducing gradient materialization and optimizer dispatch overhead. A short schedule reduces the number of times this step cost is paid.
 
 Score renders and structural mutations add low-frequency overhead. The method is useful only when this overhead is outweighed by lower Gaussian count, lower tile-instance count, lower optimizer cost, or fewer iterations.

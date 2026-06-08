@@ -1,19 +1,19 @@
 \chapter{Related Work}
 \label{chap:related-work}
 
-This chapter is reserved for the final related-work discussion. The current thesis draft keeps the structure in place so that the method and experimental chapters can be written against a stable organization.
+This chapter is reserved for the final related-work discussion. The current draft keeps the structure in place so that the method and experimental chapters can be written against a stable organization. The final pass will add formal citations and a tighter comparison with the papers collected in the project bibliography folder.
 
 \section{Neural Rendering and Novel View Synthesis}
 
-This section will summarize implicit radiance fields, explicit scene representations, and the role of differentiable rendering in novel view synthesis.
+This section will summarize implicit radiance fields, explicit scene representations, and the role of differentiable rendering in novel view synthesis. The intended narrative is that neural radiance fields made high-quality view synthesis practical, while explicit point, voxel, and Gaussian representations shifted part of the burden from neural function evaluation to data-structure design and rasterization.
 
 \section{3D Gaussian Splatting}
 
-This section will review the standard 3DGS representation, differentiable tile-based rasterization, density control, and the commonly used photometric training objective.
+This section will review the standard 3DGS representation, differentiable tile-based rasterization, density control, and the commonly used photometric training objective. It will also clarify which parts of the standard pipeline are kept unchanged in this thesis: anisotropic Gaussian primitives, SH color, opacity, tile sorting, alpha blending, and RGB reconstruction loss.
 
 \section{Fast 3DGS Training}
 
-This section will position FasterGSFusedRapid against prior fast-training systems for 3DGS. The discussion will cover shorter schedules, improved densification, pruning, backend optimization, and reduced rasterization work.
+This section will position RapidGS against prior fast-training systems for 3DGS. The discussion will cover shorter schedules, improved densification, pruning, backend optimization, reduced rasterization work, and methods that explicitly regulate Gaussian importance or primitive count. Papers such as FastGS, Faster-GS, DashGaussian, Speedy-Splat, Mini-Splatting, Mini-Splatting2, and Taming 3DGS will be used to explain the design space.
 
 \section{Initialization Priors}
 

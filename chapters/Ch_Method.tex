@@ -1,14 +1,16 @@
 \chapter{Method}
 \label{chap:method}
 
-FasterGSFusedRapid accelerates 3DGS training by acting on the three factors in the training-cost view: the average number of Gaussians, the cost of one step, and the number of steps. This chapter describes the method at the algorithmic level. Implementation details and runtime accounting are described in Chapter~\ref{chap:implementation}.
+RapidGS accelerates 3DGS training by acting on the three factors in the training-cost view: the average number of Gaussians, the cost of one step, and the number of steps. This chapter describes the method at the algorithmic level. Implementation details and runtime accounting are described in Chapter~\ref{chap:implementation}.
+
+The method is organized around two principles. First, all changes should preserve the standard 3DGS rendering semantics. The same Gaussian parameters, SH color model, opacity activation, projection equations, and front-to-back alpha blending remain in use. Second, every acceleration mechanism should have a clear cost target. Structure control targets redundant Gaussian growth, compact rasterization targets unnecessary Gaussian-tile instances, backend fusion targets optimizer-path overhead, and the short schedule targets repeated step cost.
 
 \section{Overview}
 
 Training alternates between parameter optimization and structure edits. On every iteration, a training view is sampled and rendered. PyTorch computes the RGB loss and its image-space gradient. The fused CUDA backend propagates this gradient to Gaussian parameters, updates Adam moments and parameters, and optionally accumulates densification statistics. At structure-edit clocks, the system uses gradient statistics and multi-view high-error scores to decide which Gaussians should be cloned, split, or pruned.
 
 \begin{algorithm}[H]
-\caption{FasterGSFusedRapid training loop}
+\caption{RapidGS training loop}
 \label{alg:training-loop}
 \begin{algorithmic}[1]
 \STATE Initialize Gaussian set $\mathcal{G}$ from COLMAP/SfM points
@@ -29,6 +31,14 @@ Training alternates between parameter optimization and structure edits. On every
 \end{algorithmic}
 \end{algorithm}
 
+\section{Design Rationale}
+
+A fast 3DGS trainer must avoid two opposite failure modes. If it grows too few Gaussians, the model lacks capacity and loses detail. If it grows too many Gaussians, training becomes expensive and later pruning has to spend effort undoing earlier decisions. The standard view-space gradient signal is useful, but it is local and view-dependent. It can identify where a projected Gaussian is sensitive to image-space movement, but it cannot by itself tell whether the signal corresponds to stable multi-view structure or a transient residual.
+
+The proposed design keeps the gradient signal because it is cheap and directly tied to the differentiable rasterizer. It then adds a multi-view contribution gate that asks a different question: did this Gaussian actually participate in explaining high-error pixels across sampled views? The combination is more selective than either signal alone. High gradient without multi-view contribution can indicate local instability. Multi-view high-error contribution without sufficient gradient may indicate residual error nearby, but not necessarily a useful clone or split candidate. Growth is strongest when both signals agree.
+
+Pruning uses related observations with a different interpretation. A low-opacity Gaussian is unlikely to contribute much color. A large or abnormal Gaussian can explain too broad a region and create unnecessary tile work. A split parent can become redundant after its children are inserted. A Gaussian that repeatedly participates in high-error regions late in training may be part of an inconsistent explanation rather than useful structure. These deletion rules are intentionally not the mirror image of densification rules; adding and deleting have different risks and should run on different clocks.
+
 \section{Cost-Aware Structure Editing}
 
 Densification and pruning are both discrete edits to the Gaussian set. An edit $a$ transforms the current set $\mathcal{G}$ into $\mathcal{G}_a$ and changes both reconstruction loss and training cost:
@@ -45,11 +55,15 @@ An ideal edit would satisfy
 \begin{equation}
 \Delta\mathcal{L}(a)+\lambda\Delta\mathcal{C}(a)<0.
 \end{equation}
-This condition is not directly evaluated in the implementation because testing every candidate edit would require re-optimization. Instead, FasterGSFusedRapid uses low-cost proxy signals that approximate where additional capacity is useful and where existing capacity has low value.
+This condition is not directly evaluated in the implementation because testing every candidate edit would require re-optimization. Instead, RapidGS uses low-cost proxy signals that approximate where additional capacity is useful and where existing capacity has low value.
+
+The edit view also explains why densification and pruning should not be treated as independent heuristics. A clone or split operation increases the future cost of every following iteration in which the new Gaussian remains active. A pruning operation decreases future cost, but it can raise reconstruction loss if it deletes a useful primitive. The useful question is therefore not whether a Gaussian has a large local signal in isolation. The useful question is whether the expected quality benefit of keeping or adding capacity justifies the repeated runtime cost.
+
+In practice, the method uses action-specific clocks. Growth is most useful while the representation is still discovering scene structure. Later in training, aggressive growth has less time to pay back its cost. Pruning is useful throughout training but becomes especially important after the structure has mostly formed. Delaying stronger pruning also reduces the chance of deleting a Gaussian that would have become useful after nearby primitives move or split.
 
 \section{Multi-View High-Error Contribution Score}
 
-The standard 3DGS densification rule relies heavily on view-space gradient magnitude. This signal is useful because it indicates local optimization pressure, but it is also sensitive to single-view noise, occlusion boundaries, background competition, and transient high-error pixels. FasterGSFusedRapid keeps the gradient signal but requires selected candidates to pass a multi-view contribution gate.
+The standard 3DGS densification rule relies heavily on view-space gradient magnitude. This signal is useful because it indicates local optimization pressure, but it is also sensitive to single-view noise, occlusion boundaries, background competition, and transient high-error pixels. RapidGS keeps the gradient signal but requires selected candidates to pass a multi-view contribution gate.
 
 Given a sampled set of score views $\mathcal{V}_K$, a high-error mask $M_v(\mathbf{p})$ is computed from the RGB residual in each view. A metric-count render then counts whether Gaussian $i$ actually contributes to high-error pixels under the same visibility and alpha-blending semantics as normal rendering:
 \begin{equation}
@@ -61,9 +75,17 @@ M_v(\mathbf{p})A_{i,v}(\mathbf{p}),
 \end{equation}
 where $A_{i,v}(\mathbf{p})$ indicates an effective alpha contribution during rasterization. This is not a bbox overlap count. It is a contribution-aware statistic tied to the real rendering path.
 
+The distinction between contribution count and bbox overlap is central. A projected bbox only indicates that a Gaussian might affect a tile or pixel. It ignores opacity, Gaussian falloff, transmittance, and early termination in alpha blending. A contribution-aware count is closer to the training computation because it follows the same visibility path that produces the rendered RGB image. This makes the score better aligned with the question asked by density control: whether a Gaussian is actually involved in image formation where the model currently has residual error.
+
+The score is deliberately simple. It counts effective participation rather than estimating the exact loss decrease from a hypothetical edit. Exact edit evaluation would require inserting or deleting a candidate, running additional optimization, and measuring multi-view loss again. That would be too expensive for a low-frequency callback. A metric-count render provides a cheaper proxy that can be computed on a small sampled set of views.
+
 \section{Score-Gated Densification}
 
 Growth candidates are first selected by view-space gradient statistics accumulated during training. They are then filtered by the multi-view high-error contribution score. Small Gaussians are cloned to add local capacity, while large Gaussians are split into smaller children to refine coarse structure. The intent is to allocate new primitives to regions where local gradient pressure and multi-view residual evidence agree.
+
+Clone and split serve different structural roles. Cloning preserves the scale of a small Gaussian and adds nearby capacity so that local appearance or geometry can be represented with more degrees of freedom. Splitting is used when a Gaussian is too large and should be replaced by smaller children. This distinction follows the standard 3DGS intuition, but the candidate set is more selective because it must pass the multi-view score gate.
+
+The score gate also limits a common source of runtime growth. If a single-view gradient spike creates many candidates, unconstrained densification can increase the Gaussian count even when the residual is caused by occlusion ordering, background mismatch, or temporary color competition. Requiring multi-view evidence reduces this type of redundant growth. It does not guarantee that every edit is optimal, but it makes the edit policy more aligned with stable scene structure.
 
 \begin{algorithm}[H]
 \caption{Score-gated densification and pruning}
@@ -84,6 +106,16 @@ Growth candidates are first selected by view-space gradient statistics accumulat
 
 Pruning removes Gaussians that are unlikely to justify their future training cost. The current method combines several practical criteria: low opacity, abnormal screen or world scale, split-parent replacement, and later-stage VCP pruning. VCP pruning reuses the contribution-aware score mechanism with the opposite interpretation. During late training, a Gaussian that repeatedly participates in high-error regions without resolving them can be treated as a suspicious or low-value structure. This pruning is deliberately delayed and budgeted to reduce the risk of deleting useful capacity too early.
 
+The pruning policy is conservative because deletion is irreversible within a single callback. A deleted Gaussian can only be recovered indirectly if later densification creates new capacity nearby. For this reason, pruning combines simple low-risk rules with later multi-view checks. Low opacity is a direct low-contribution signal. Oversized screen-space extent is a cost and quality risk because it can create many tile instances and blur structure. Split-parent removal is a replacement rule: when a coarse parent has been explicitly split, keeping the parent can duplicate the explanation already assigned to its children.
+
+VCP pruning is a later-stage consistency check. It is not ordinary opacity pruning. It examines whether a Gaussian continues to participate in high-error regions under contribution-aware rendering. If such behavior persists late in training, the primitive may be explaining the wrong structure or competing with nearby Gaussians. The method treats these candidates as pruning risks rather than immediate deletions, so thresholds, confirmation, and deletion budget remain important.
+
+\section{Short Schedule Under a Quality Constraint}
+
+RapidGS uses a shorter training schedule because controlled structure editing and a lower-cost backend make the model reach the target quality earlier. The schedule is not chosen as an independent speed trick. If the Gaussian set is unstable, shortening the run can reduce quality. If pruning is too aggressive, a short schedule gives the model less time to recover. The schedule therefore belongs to the same system design as densification, pruning, compact rasterization, and fused optimization.
+
+The schedule criterion is multi-metric. A setting should not be accepted only because it has good PSNR or only because it has low LPIPS. The selected schedule should preserve the reference quality region across PSNR, SSIM, and LPIPS while reducing total optimization time. This is why the experiments report all three metrics and why further schedule reductions are treated as boundary cases until they are validated by full runs.
+
 \section{Fused Training Backend}
 
 The fused backend keeps the RGB loss in PyTorch but avoids exposing all per-Gaussian gradients to the PyTorch optimizer. The only boundary quantity needed after the forward pass is
@@ -92,8 +124,20 @@ The fused backend keeps the RGB loss in PyTorch but avoids exposing all per-Gaus
 \end{equation}
 CUDA kernels propagate this image-space gradient through alpha blending, 2D conic parameters, projected means, 3D covariance, opacity, SH color, and 3D means. The backend then updates Adam moments and Gaussian parameters directly. This design reduces `.grad' tensor traffic, general optimizer bookkeeping, and kernel-launch overhead associated with separate optimizer operations.
 
+This design keeps the loss interface flexible while specializing the expensive Gaussian path. Loss composition remains in Python, so the training loop can still combine RGB terms, logging, and evaluation in a familiar way. The backend only requires the gradient of the scalar loss with respect to the rendered image. From that point onward, all per-Gaussian work is handled in a layout that knows the Gaussian structure and can update parameters and moments consistently.
+
+The fused backend is especially useful because the Gaussian set is dynamic. When new Gaussians are appended, Adam moments must be appended with matching rows. When Gaussians are pruned, the corresponding moments must be removed. When Gaussians are reordered, moments and auxiliary state must be reordered exactly the same way. Keeping this state in a single backend reduces the risk of state mismatch.
+
 \section{Compact Rasterization}
 
-The rasterizer first assigns Gaussians to screen-space tiles. A bounding-box assignment can generate many Gaussian-tile pairs whose actual alpha contribution is negligible, especially near the corners of the projected footprint. FasterGSFusedRapid uses a compact contribution test during preprocessing. For each candidate tile, the rasterizer estimates whether the Gaussian can reach an effective alpha contribution anywhere in that tile. Only passing Gaussian-tile pairs are emitted into the instance list used by sorting, blending, and backward execution.
+The rasterizer first assigns Gaussians to screen-space tiles. A bounding-box assignment can generate many Gaussian-tile pairs whose actual alpha contribution is negligible, especially near the corners of the projected footprint. RapidGS uses a compact contribution test during preprocessing. For each candidate tile, the rasterizer estimates whether the Gaussian can reach an effective alpha contribution anywhere in that tile. Only passing Gaussian-tile pairs are emitted into the instance list used by sorting, blending, and backward execution.
 
 This optimization does not change the alpha blending formula. It changes which negligible tile candidates are skipped before the expensive tile-local work begins. The compact threshold must therefore be conservative enough to avoid removing contributions that matter for thin structures or fine detail.
+
+Compact rasterization complements structure control. Structure control reduces the number of primitives that survive in the model. Compact rasterization reduces the amount of work generated by the primitives that remain. These are different levers: a scene can have a moderate number of Gaussians but many tile instances if the Gaussians are large, and a scene can have many small Gaussians whose tile lists remain short. The training system benefits from controlling both quantities.
+
+\section{Putting the Components Together}
+
+The components are designed to reinforce each other. Score-gated densification limits early redundant growth, which reduces future rasterization and optimizer work. Pruning removes low-value or inconsistent capacity, which lowers later step cost. Compact rasterization reduces the work of retained Gaussians by avoiding negligible tile instances. The fused backend lowers the cost of gradient propagation and Adam updates for the active Gaussian set. A shorter schedule then reduces the number of times the remaining step cost is paid.
+
+This combined interpretation is important for evaluating the method. A single ablation may not capture the full effect because the components change the operating point of one another. For example, compact rasterization can make a larger Gaussian set more affordable, while better structure control can make a short schedule safer. The final system should therefore be judged by both end-to-end training time and intermediate cost indicators such as Gaussian count, tile-instance count, runtime breakdown, and reconstruction quality.

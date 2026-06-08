@@ -1,0 +1,96 @@
+\chapter{Training Cost Analysis}
+\label{chap:training-cost-analysis}
+
+This chapter expands the cost view introduced in Chapter~\ref{chap:introduction}. The purpose is not to build an exact runtime model for every CUDA kernel. Instead, the goal is to identify the cost factors that repeatedly appear in 3DGS training and to motivate why RapidGS targets Gaussian count, tile-instance work, optimizer execution, and schedule length together.
+
+\section{From Rendering Representation to Training Cost}
+
+3DGS is efficient at rendering because it converts a volumetric reconstruction problem into a rasterization problem over explicit primitives. The renderer does not ray-march a neural field at many samples per pixel. It projects Gaussian primitives, groups them by screen-space tiles, sorts them by depth, and composites them with alpha blending. This design gives excellent rendering speed after training, but the training loop still has to optimize a large and dynamic primitive set.
+
+The dominant cost is not only the number of pixels. It also depends on how many Gaussians exist, how much of the screen they cover, how many Gaussian-tile instances are generated, how deep the tile-local primitive lists become, and how the optimizer state is updated. These quantities change during training because densification and pruning mutate the Gaussian set. A scene that ends with a compact model may still spend much of training in a high-cost intermediate regime if redundant Gaussians are created early.
+
+For a fixed image resolution and a fixed training dataset, a useful first-order view is
+\begin{equation}
+T_{\mathrm{train}}
+\approx
+\bar{N}_{\mathrm{gs}}
+\cdot
+c_{\mathrm{opt}}
+\cdot
+N_{\mathrm{iter}},
+\end{equation}
+where $\bar{N}_{\mathrm{gs}}$ is the average number of Gaussians during training, $c_{\mathrm{opt}}$ is the average cost of one step per Gaussian under the current rasterization and optimizer path, and $N_{\mathrm{iter}}$ is the number of optimization steps. The terms are not independent. Increasing the Gaussian count can also increase tile-instance count and memory pressure. Reducing the iteration count can change which densification and pruning events happen. Fusing the optimizer can change the cost profile even when the Gaussian count is unchanged.
+
+\section{Average Gaussian Count}
+
+The Gaussian count controls the size of the trainable representation. Every Gaussian carries geometric parameters, opacity, SH coefficients, Adam moments, and auxiliary statistics. When $N_t$ increases, the backend must store more parameter rows, update more optimizer state, and consider more primitives during preprocessing. Even if many Gaussians have small visual contribution, they can still create overhead if they remain visible, touch tiles, or require optimizer updates.
+
+The average count over training can be written as
+\begin{equation}
+\bar{N}_{\mathrm{gs}}
+=
+\frac{1}{N_{\mathrm{iter}}}
+\sum_{t=1}^{N_{\mathrm{iter}}} N_t .
+\end{equation}
+This average is more informative than only the final number of Gaussians. A method that grows to many millions of Gaussians and prunes late may end with a compact model, but it has already paid high rasterization and optimizer cost for many iterations. Conversely, a method that keeps the intermediate set controlled can reduce training time even if the final Gaussian count is similar to another baseline.
+
+Density control is therefore both a quality mechanism and a runtime mechanism. Clone and split operations allocate new capacity to reduce reconstruction error. Pruning removes capacity that is unlikely to justify its future cost. If these decisions are driven only by local or single-view signals, redundant growth can appear near occlusion boundaries, background regions, specular highlights, or noisy residuals. Multi-view structure control is designed to reduce this failure mode by requiring stronger evidence that a candidate Gaussian participates in persistent high-error regions.
+
+\section{Tile-Instance Work}
+
+The rasterizer does not blend every Gaussian at every pixel. It builds a list of Gaussian-tile instances. Let $M_t$ denote the number of effective instances at iteration $t$. The per-step rasterization and backward cost depends strongly on $M_t$:
+\begin{equation}
+\mathcal{C}_{\mathrm{rast+backward}}(t)
+\approx
+f(M_t,P,\mathcal{B}_t),
+\end{equation}
+where $P$ is the number of pixels and $\mathcal{B}_t$ summarizes the distribution of tile-list lengths and backward buckets. Even with the same number of Gaussians, two scenes can have different $M_t$ if their Gaussians have different screen-space scales or coverage.
+
+Bounding-box tile assignment is conservative. A projected Gaussian footprint is elliptical, while its screen-space bounds are rectangular. Tiles near the corners of the rectangle can be included even when the Gaussian has negligible alpha contribution throughout the tile. These extra instances are not free. They must be counted, written, sorted, scanned during blending, and revisited during backward propagation. Compact tile-instance generation reduces this work by testing whether a Gaussian can make an effective contribution inside a candidate tile before emitting the instance.
+
+The compact test must be designed around contribution, not only geometry. A Gaussian that geometrically overlaps a tile may have low opacity or may be far enough from the tile interior that its response is negligible. Conversely, a weak contribution can still matter if the threshold is too aggressive. The practical goal is to remove instances that are already below the effective alpha cutoff while preserving the standard alpha blending semantics for retained instances.
+
+\section{Backward and Optimizer Cost}
+
+Training requires more than forward rendering. The loss gradient with respect to the rendered RGB image must be propagated through alpha blending, color evaluation, 2D projection, covariance construction, opacity, scale, rotation, and 3D mean parameters. Standard implementations expose per-Gaussian gradients to the framework and then use a general optimizer to update the parameters.
+
+This general path has several costs. It materializes large `.grad' tensors, traverses optimizer parameter groups, looks up state, launches generic tensor operations, and clears gradients for the next iteration. These operations are flexible, but 3DGS has a special structure: all per-Gaussian tensors share the same row identity, and the optimizer state must follow clone, split, prune, and reorder operations. A fused backend can exploit this structure by computing Gaussian gradients and applying Adam updates in the same CUDA-side representation.
+
+The fused path should not be described as simply moving Adam from CPU to GPU. The numerical Adam operations in modern frameworks already run on GPU tensors. The acceleration comes from avoiding the generic \texttt{.grad + optimizer.step + optimizer.state + zero\_grad} path for millions of small per-Gaussian parameter rows and from keeping dynamic state management inside one aligned per-Gaussian system.
+
+\section{Iteration Count}
+
+The final factor is the number of training iterations. Reducing $N_{\mathrm{iter}}$ directly reduces the number of forward, backward, and optimizer steps. However, the schedule cannot be shortened independently of structure control. If early densification is noisy or if pruning removes useful Gaussians too soon, a short schedule may not allow enough time for the representation to recover.
+
+This is why RapidGS treats the schedule as quality-constrained. The selected schedule is not the shortest possible run. It is the shortest setting, under the current protocol, that preserves the target quality margin across PSNR, SSIM, and LPIPS. Shorter candidates can be useful for interactive previews or further tuning, but they should not become the main thesis setting unless the quality margin remains stable.
+
+\section{Interactions Between Factors}
+
+The three factors interact in ways that make isolated reasoning misleading. Reducing Gaussian count often reduces tile-instance count, but not always: a smaller number of large Gaussians may still cover many tiles. Compact rasterization can reduce $M_t$ without reducing $N_t$. A fused optimizer can reduce per-step cost even if the same number of Gaussians and tile instances are used. A short schedule can amplify the importance of early structure decisions because there are fewer later iterations to correct mistakes.
+
+A more explicit total-time view is
+\begin{equation}
+T_{\mathrm{train}}
+\approx
+\sum_{t=1}^{N_{\mathrm{iter}}}
+\left[
+\mathcal{C}_{\mathrm{pre}}(N_t)
++
+\mathcal{C}_{\mathrm{sort}}(M_t)
++
+\mathcal{C}_{\mathrm{blend}}(M_t,P)
++
+\mathcal{C}_{\mathrm{back}}(M_t,P)
++
+\mathcal{C}_{\mathrm{adam}}(N_t)
+\right]
++
+\sum_k \mathcal{C}_{\mathrm{edit}}^{(k)} .
+\end{equation}
+The edit term includes score renders, densification callbacks, pruning callbacks, and state synchronization. These edits are beneficial only if they reduce later costs or preserve quality enough to allow a shorter schedule.
+
+\section{Design Implications}
+
+The cost analysis leads to four design implications. First, density control should be conservative about redundant growth because unnecessary Gaussians create repeated downstream cost. Second, tile-instance generation should remove low-contribution work before sorting and blending because every emitted instance is paid for multiple times. Third, the optimizer path should be specialized for aligned per-Gaussian tensors and dynamic state mutation. Fourth, the training schedule should be chosen under a quality constraint rather than by a fixed inherited iteration count.
+
+RapidGS is built around these implications. Multi-view score-gated densification and VCP pruning act on $\bar{N}_{\mathrm{gs}}$. Compact rasterization acts on $M_t$ and therefore on the rasterization/backward part of $c_{\mathrm{opt}}$. The fused backend acts on gradient materialization, Adam update, and dynamic state maintenance. The selected short schedule acts on $N_{\mathrm{iter}}$. The method is best understood as the combination of these compatible reductions, not as a single isolated acceleration trick.

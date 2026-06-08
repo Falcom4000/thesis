@@ -20,13 +20,15 @@ Table~\ref{tab:main-result} summarizes the current nine-scene mean results under
 Method & Train time & PSNR & SSIM & LPIPS & Gaussians \\
 \midrule
 Original 3DGS & 1053.54s & 27.5963 & 0.8153 & 0.2138 & 2.625M \\
-RapidGS-big local & 235.93s & 27.9330 & 0.8200 & 0.2160 & 1.161M \\
-FasterGSFusedRapid v0.5.0 & 152.47s & 28.1586 & 0.8289 & 0.2073 & 1.086M \\
+Local fast-training reference & 235.93s & 27.9330 & 0.8200 & 0.2160 & 1.161M \\
+RapidGS & 152.47s & 28.1586 & 0.8289 & 0.2073 & 1.086M \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Compared with the original 3DGS baseline, FasterGSFusedRapid reduces average training time by approximately $6.9\times$. Compared with the local RapidGS-big/FastGS-quality reference, it reduces training time by approximately 35.4 percent while improving PSNR, SSIM, and LPIPS in the current mean result.
+Compared with the original 3DGS baseline, RapidGS reduces average training time by approximately $6.9\times$. Compared with the local FastGS-quality reference, it reduces training time by approximately 35.4 percent while improving PSNR, SSIM, and LPIPS in the current mean result.
+
+These numbers should be interpreted as the current main result rather than the final experimental claim. The final thesis should include per-scene values, repeated runs where practical, and runtime breakdowns. The mean table is still useful at this stage because it fixes the quality target for the rest of the draft: the proposed system should be faster than the local fast-training reference while preserving the same reconstruction-quality region.
 
 \section{Planned Ablations}
 
@@ -39,6 +41,25 @@ The final thesis will separate the contribution of each cost source. The planned
   \item backend execution: fused CUDA backward and Adam update versus less specialized optimizer paths;
   \item initialization: COLMAP/SfM initialization versus optional AnySplat initialization with initialization time reported separately.
 \end{itemize}
+
+\section{Runtime Indicators to Report}
+
+The final experimental chapter should report intermediate cost indicators in addition to end-to-end time. Gaussian count is necessary but not sufficient. Tile-instance count, forward preprocessing time, sort time, blend time, backward/update time, score-render time, and mutation time give a clearer picture of why a configuration is faster or slower.
+
+The most useful plots are expected to be:
+\begin{itemize}
+  \item Gaussian count over training iterations;
+  \item effective Gaussian-tile instance count over training iterations;
+  \item per-step runtime breakdown before and after compact rasterization;
+  \item quality versus training-time curves for schedule choices;
+  \item score-render overhead compared with the time saved by controlled structure growth.
+\end{itemize}
+
+\section{Evaluation Boundaries}
+
+The evaluation should keep initialization and training-loop time separate. COLMAP/SfM initialization is part of the standard data preparation path for the optimization-style baseline. Optional external Gaussian initialization has its own runtime and coordinate-alignment cost, so it should be reported as an additional pipeline component.
+
+The evaluation should also keep metric implementations fixed. PSNR, SSIM, and VGG LPIPS are reported together because each metric emphasizes a different part of reconstruction quality. A configuration that improves one metric while substantially increasing time or degrading another metric should be treated as a trade-off, not as an unconditional improvement.
 
 \section{Current Interpretation}
 

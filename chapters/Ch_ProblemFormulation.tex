@@ -13,6 +13,14 @@ where $\mathbf{I}_v$ is the image for view $v$ and $\Pi_v$ denotes its camera pa
 \end{equation}
 which can render training and novel views through standard 3DGS rasterization.
 
+The formulation is intentionally single-scene and optimization-based. Each scene is trained independently, and all speed measurements in this thesis refer to the scene-specific optimization loop unless an initialization cost is explicitly stated. This distinction is important because a method can accelerate the optimizer itself, provide a better starting point, or change both. RapidGS primarily targets the optimizer and rasterization path after the initial Gaussian set has been constructed.
+
+\section{Coordinate Frame and Initialization}
+
+The training cameras and initial points define a common scene coordinate frame. In the default pipeline, the sparse SfM point cloud provides initial Gaussian means and coarse color. The initial covariance and opacity values are chosen so that the representation can begin as a sparse but optimizable set of primitives. After initialization, all Gaussians are ordinary trainable 3DGS primitives; there is no separate class of fixed points or externally supervised primitives.
+
+Optional Gaussian PLY initialization follows the same principle. If an external initializer provides means, covariances, rotations, opacities, or SH coefficients, those quantities must be transformed into the same training coordinate frame before optimization. Once imported, the Gaussians are still optimized by the same rasterizer, density control, pruning, and Adam update path. Therefore initialization quality and initialization runtime should be reported separately from the training system studied in this thesis.
+
 \section{Gaussian Parameterization}
 
 Each Gaussian is represented as
@@ -31,6 +39,24 @@ R(\mathbf{q}_i)
 \operatorname{diag}(\exp(2\mathbf{s}_i))
 R(\mathbf{q}_i)^\top .
 \end{equation}
+
+This parameterization separates the geometric center, anisotropic extent, orientation, opacity, and color of each primitive. The separation matters for training acceleration because different parameters have different computational footprints. Position, scale, rotation, opacity, and color all participate in backward propagation, but they do not contribute equally to rasterization culling, tile coverage, or optimizer-state size. A system that changes the number of Gaussians changes all of these costs simultaneously.
+
+\section{View-Dependent Color}
+
+The color of a Gaussian is represented with spherical-harmonic coefficients. For a view direction $\mathbf{d}_{i,v}$, the rendered color can be written as
+\begin{equation}
+\mathbf{C}_i(\mathbf{d}_{i,v})
+=
+\operatorname{clamp}_{\geq 0}
+\left(
+\sum_{b=0}^{B_t-1}
+Y_b(\mathbf{d}_{i,v})\mathbf{c}_{i,b}
+\right),
+\end{equation}
+where $Y_b$ is a spherical-harmonic basis function and $B_t$ is the number of active bases at training step $t$. The active basis count can increase over training so that early optimization focuses on low-frequency appearance before higher-order view-dependent terms are fully enabled.
+
+RapidGS does not change this color model. The fused backend must therefore reproduce the same SH evaluation and backward semantics as the standard path. This constraint is useful because it keeps quality comparisons focused on training efficiency rather than representational capacity.
 
 \section{Projection and Alpha Blending}
 
@@ -76,9 +102,21 @@ T_{\mathrm{final},v}(\mathbf{p})\mathbf{b}_v .
 \end{equation}
 Here $\mathbf{C}_i(\mathbf{d}_{i,v})$ is the spherical-harmonic color evaluated along the view direction and $\mathbf{b}_v$ is the background color.
 
+The front-to-back transmittance term $T_{i,v}(\mathbf{p})$ makes visibility order a central part of the computation. A Gaussian can overlap a pixel in a geometric sense but still have little effective contribution if it is behind opaque splats or has low opacity. This is why RapidGS distinguishes bounding-box overlap from contribution-aware statistics. Structure-control scores and compact tile assignment should follow the actual rasterization semantics as closely as possible.
+
+\section{Dynamic Gaussian Set}
+
+Unlike a fixed neural network with a fixed parameter tensor shape, 3DGS training changes the number of trainable primitives. Densification appends new Gaussians through clone or split operations. Pruning removes Gaussians whose opacity, scale, replacement status, or multi-view contribution pattern indicates low value. Let $N_t$ denote the number of Gaussians at iteration $t$:
+\begin{equation}
+\mathcal{G}_t=\{G_i^{(t)}\}_{i=1}^{N_t}.
+\end{equation}
+The optimizer state must evolve with $\mathcal{G}_t$. Any append, removal, or permutation must be applied consistently to parameter tensors, Adam moments, density-control statistics, pruning counters, and rasterization helper buffers.
+
+This dynamic-set property is one reason a specialized backend can be useful. A general optimizer treats parameters as tensors with external state, while a 3DGS training system knows that every row of every tensor corresponds to the same Gaussian identity. RapidGS uses that structure to keep state alignment explicit.
+
 \section{Training Objective and Invariants}
 
-FasterGSFusedRapid keeps the standard RGB photometric objective:
+RapidGS keeps the standard RGB photometric objective:
 \begin{equation}
 \mathcal{L}_{\mathrm{rgb}}
 =
@@ -91,3 +129,15 @@ FasterGSFusedRapid keeps the standard RGB photometric objective:
 \end{equation}
 
 The method does not alter the Gaussian primitive, SH color model, alpha blending semantics, or RGB-only supervision. The changes occur in how the dynamic Gaussian set is edited, how rasterization work is selected, and how the backward and optimizer path are executed.
+
+\section{Quality Constraint}
+
+The acceleration objective is constrained by reconstruction quality. A shorter schedule or more aggressive pruning is not useful if it only reduces time by discarding necessary structure. The optimization target can be written informally as
+\begin{equation}
+\min T_{\mathrm{train}}
+\quad
+\mathrm{s.t.}
+\quad
+Q(\mathcal{G}) \succeq Q_{\mathrm{ref}}-\delta_Q,
+\end{equation}
+where $Q$ denotes a vector of evaluation metrics such as PSNR, SSIM, and LPIPS, and $Q_{\mathrm{ref}}$ is the chosen quality reference. The comparison should not rely on a single metric. For example, a setting can improve LPIPS while increasing Gaussian count and training time too much, or it can improve training time while losing perceptual quality. The thesis therefore treats fast training as a constrained system problem rather than pure runtime minimization.

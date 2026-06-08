@@ -3,7 +3,11 @@
 
 \section{What the Method Does Not Change}
 
-FasterGSFusedRapid does not change the core 3DGS representation. It keeps anisotropic Gaussian primitives, SH color, opacity, front-to-back alpha blending, and RGB L1+DSSIM supervision. Its contribution is a training-system redesign: better structure-edit decisions, lower rasterization work, a fused Gaussian optimization backend, and a shorter quality-constrained schedule.
+RapidGS does not change the core 3DGS representation. It keeps anisotropic Gaussian primitives, SH color, opacity, front-to-back alpha blending, and RGB L1+DSSIM supervision. Its contribution is a training-system redesign: better structure-edit decisions, lower rasterization work, a fused Gaussian optimization backend, and a shorter quality-constrained schedule.
+
+This boundary is important for interpreting the results. If the method improves runtime while keeping the representation and objective fixed, the speedup is attributable to the training system rather than to a more expressive primitive or additional supervision. It also makes the method easier to compare with optimization-style 3DGS baselines because the rendered image is produced by the same high-level semantics.
+
+The boundary also defines what the method cannot claim. It is not a new radiance-field representation. It is not a feed-forward reconstruction model. It does not use depth supervision, semantic supervision, or a learned policy to decide every structural edit. These are valid research directions, but they are outside the current thesis scope.
 
 \section{Limitations}
 
@@ -15,12 +19,28 @@ AnySplat initialization is not part of the current main result. It remains a use
 
 The current results are centered on Mip-NeRF 360. Further validation is needed on larger scenes, more diverse camera trajectories, and settings where the assumptions of static RGB-only reconstruction are weaker.
 
+\section{Engineering Trade-Offs}
+
+The fused backend improves the hot path, but it increases implementation complexity. A PyTorch optimizer path is easier to inspect, easier to modify, and easier to combine with arbitrary losses. A fused CUDA path requires careful maintenance of parameter layout, moment layout, auxiliary buffers, and mutation semantics. This is a reasonable trade-off for fast 3DGS training, but it means correctness checks are more important.
+
+The compact rasterization path has a similar trade-off. It reduces unnecessary tile work, but it adds another contribution test to the preprocessing stage. The test must stay consistent with the renderer's alpha cutoff and numerical conventions. If the renderer changes its opacity activation, cutoff, or tile geometry, the compact test should be checked again.
+
+Multi-view score rendering also trades callback overhead for better structure decisions. The score path should remain low frequency and budgeted. If it is run too often or on too many views, it can erase part of the runtime benefit it is meant to create.
+
+\section{Reproducibility Considerations}
+
+A reproducible fast-training claim should specify more than the final PSNR and training time. It should specify the dataset split, image scale, evaluation script, metric implementation, hardware, CUDA environment, initialization path, training-time definition, and whether optional initialization time is included. It should also report enough intermediate statistics to explain why a run is fast.
+
+For this thesis, the most important reproducibility statistics are final Gaussian count, average or sampled Gaussian count during training, effective tile-instance count, score-render frequency, and runtime breakdown. These quantities connect the empirical results back to the cost analysis in Chapter~\ref{chap:training-cost-analysis}. Without them, a faster wall-clock number is harder to diagnose or reproduce.
+
 \section{Future Work}
 
 Future work can extend the structure-control signal set with depth consistency, surface proximity, local density, perceptual sensitivity, redundancy measures, or temporal consistency for dynamic scenes. Another direction is to make the structure-edit budget adaptive, so the system can spend more score-render effort only when the current Gaussian set shows signs of unstable growth or poor convergence.
 
 The implementation can also be further profiled at the kernel level. In particular, separating projection, compact tile generation, sort, blend, bucket backward, Adam update, score render, and mutation costs would make it easier to decide which part of the backend should receive future engineering effort.
 
+Another useful direction is to connect structure editing more directly to a budgeted objective. The current method uses interpretable proxy signals. A future system could estimate the expected quality gain and runtime cost of candidate edits more explicitly, then allocate a fixed primitive or time budget across the scene. Such a controller would need to remain cheap enough that its own decision cost does not dominate training.
+
 \section{Conclusion}
 
-This thesis presents FasterGSFusedRapid, a fast training pipeline for standard 3D Gaussian Splatting. By decomposing training time into Gaussian count, per-step primitive cost, and iteration count, the method aligns structure control, backend fusion, compact rasterization, and short scheduling under one cost-aware design. The current results show that substantial training-time reduction is possible without changing the 3DGS rendering representation or RGB photometric objective.
+This thesis presents RapidGS, a fast training pipeline for standard 3D Gaussian Splatting. By decomposing training time into Gaussian count, per-step primitive cost, and iteration count, the method aligns structure control, backend fusion, compact rasterization, and short scheduling under one cost-aware design. The current results show that substantial training-time reduction is possible without changing the 3DGS rendering representation or RGB photometric objective.
