@@ -33,7 +33,7 @@
   %% Please do not leave any blank lines without {}.
   info = {
     degree        = {phd},  %% phd / mphil
-    title         = {Goodbye\texorpdfstring{\\}{, }All of Evangelion},
+    title         = {FasterGSFusedRapid:\texorpdfstring{\\}{ }Fast 3D Gaussian Splatting Training with Fused Backend, Multi-View Structure Control, and Compact Rasterization},
     % keywords      = {Neon, Genesis, Evangelion},
     author        = {Cruel Angel},
     % school        = {School of SEELE},
@@ -127,7 +127,7 @@
 \tableofcontents
 % \listoffigures
 % \listoftables
-% \newlistofalgorithms % This is to maintain the same appearance
+\newlistofalgorithms % This is to maintain the same appearance
 
 %% Dedication and Preface are optional
 %\input{chapters/Pre_Dedication.tex}
@@ -139,8 +139,12 @@
 
 \mainmatter
 \input{chapters/Ch_Introduction.tex}
-% \input{chapters/Ch_ExampleChapter.tex}
-% \input{chapters/Ch_Conclusion.tex}
+\input{chapters/Ch_RelatedWork.tex}
+\input{chapters/Ch_ProblemFormulation.tex}
+\input{chapters/Ch_Method.tex}
+\input{chapters/Ch_Implementation.tex}
+\input{chapters/Ch_Experiments.tex}
+\input{chapters/Ch_Discussion.tex}
 
 %% -------------------------------------------------
 %% References
@@ -154,7 +158,7 @@
 
 \appendix
 % \input{chapters/Appendix_Publications.tex}
-\input{chapters/Appendix_Requirements.tex}
+% \input{chapters/Appendix_Requirements.tex}
 % \input{chapters/Appendix_Figures.tex}
 
 \end{document}

@@ -1,0 +1,99 @@
+\chapter{Method}
+\label{chap:method}
+
+FasterGSFusedRapid accelerates 3DGS training by acting on the three factors in the training-cost view: the average number of Gaussians, the cost of one step, and the number of steps. This chapter describes the method at the algorithmic level. Implementation details and runtime accounting are described in Chapter~\ref{chap:implementation}.
+
+\section{Overview}
+
+Training alternates between parameter optimization and structure edits. On every iteration, a training view is sampled and rendered. PyTorch computes the RGB loss and its image-space gradient. The fused CUDA backend propagates this gradient to Gaussian parameters, updates Adam moments and parameters, and optionally accumulates densification statistics. At structure-edit clocks, the system uses gradient statistics and multi-view high-error scores to decide which Gaussians should be cloned, split, or pruned.
+
+\begin{algorithm}[H]
+\caption{FasterGSFusedRapid training loop}
+\label{alg:training-loop}
+\begin{algorithmic}[1]
+\STATE Initialize Gaussian set $\mathcal{G}$ from COLMAP/SfM points
+\STATE Initialize CUDA-side parameter tensors, Adam moments, and auxiliary state
+\FOR{$t=1$ to $N_{\mathrm{iter}}$}
+  \STATE Sample a training view $(\mathbf{I}_v,\Pi_v)$
+  \STATE Render $\hat{\mathbf{I}}_v$ with compact tile-instance generation
+  \STATE Compute $\mathcal{L}_{\mathrm{rgb}}$ in PyTorch
+  \STATE Pass $\partial\mathcal{L}_{\mathrm{rgb}}/\partial\hat{\mathbf{I}}_v$ to the fused CUDA backend
+  \STATE Run CUDA backward, Adam update, and optional densification-statistics accumulation
+  \IF{structure-edit clock is active}
+    \STATE Estimate multi-view high-error contribution scores
+    \STATE Clone or split selected Gaussians
+    \STATE Prune low-value or inconsistent Gaussians
+    \STATE Synchronize parameters, Adam moments, and auxiliary state
+  \ENDIF
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+\section{Cost-Aware Structure Editing}
+
+Densification and pruning are both discrete edits to the Gaussian set. An edit $a$ transforms the current set $\mathcal{G}$ into $\mathcal{G}_a$ and changes both reconstruction loss and training cost:
+\begin{equation}
+\Delta\mathcal{L}(a)
+=
+\mathcal{L}(\mathcal{G}_a)-\mathcal{L}(\mathcal{G}),
+\quad
+\Delta\mathcal{C}(a)
+=
+\mathcal{C}(\mathcal{G}_a)-\mathcal{C}(\mathcal{G}).
+\end{equation}
+An ideal edit would satisfy
+\begin{equation}
+\Delta\mathcal{L}(a)+\lambda\Delta\mathcal{C}(a)<0.
+\end{equation}
+This condition is not directly evaluated in the implementation because testing every candidate edit would require re-optimization. Instead, FasterGSFusedRapid uses low-cost proxy signals that approximate where additional capacity is useful and where existing capacity has low value.
+
+\section{Multi-View High-Error Contribution Score}
+
+The standard 3DGS densification rule relies heavily on view-space gradient magnitude. This signal is useful because it indicates local optimization pressure, but it is also sensitive to single-view noise, occlusion boundaries, background competition, and transient high-error pixels. FasterGSFusedRapid keeps the gradient signal but requires selected candidates to pass a multi-view contribution gate.
+
+Given a sampled set of score views $\mathcal{V}_K$, a high-error mask $M_v(\mathbf{p})$ is computed from the RGB residual in each view. A metric-count render then counts whether Gaussian $i$ actually contributes to high-error pixels under the same visibility and alpha-blending semantics as normal rendering:
+\begin{equation}
+r_i^{\mathrm{mv}}
+=
+\sum_{v\in\mathcal{V}_K}
+\sum_{\mathbf{p}}
+M_v(\mathbf{p})A_{i,v}(\mathbf{p}),
+\end{equation}
+where $A_{i,v}(\mathbf{p})$ indicates an effective alpha contribution during rasterization. This is not a bbox overlap count. It is a contribution-aware statistic tied to the real rendering path.
+
+\section{Score-Gated Densification}
+
+Growth candidates are first selected by view-space gradient statistics accumulated during training. They are then filtered by the multi-view high-error contribution score. Small Gaussians are cloned to add local capacity, while large Gaussians are split into smaller children to refine coarse structure. The intent is to allocate new primitives to regions where local gradient pressure and multi-view residual evidence agree.
+
+\begin{algorithm}[H]
+\caption{Score-gated densification and pruning}
+\label{alg:structure-edit}
+\begin{algorithmic}[1]
+\STATE Read normalized signed and absolute view-space gradient statistics
+\STATE Render score views and compute high-error masks
+\STATE Run metric-count render to obtain $r_i^{\mathrm{mv}}$
+\STATE Select clone/split candidates using gradient, score, opacity, and scale tests
+\STATE Append clone children and split children to the Gaussian tensors
+\STATE Mark split parents and low-value Gaussians for pruning
+\STATE Apply VCP pruning candidates subject to pruning thresholds and confirmation policy
+\STATE Apply the final append/mask operation to parameters, Adam moments, and auxiliary state
+\end{algorithmic}
+\end{algorithm}
+
+\section{Pruning}
+
+Pruning removes Gaussians that are unlikely to justify their future training cost. The current method combines several practical criteria: low opacity, abnormal screen or world scale, split-parent replacement, and later-stage VCP pruning. VCP pruning reuses the contribution-aware score mechanism with the opposite interpretation. During late training, a Gaussian that repeatedly participates in high-error regions without resolving them can be treated as a suspicious or low-value structure. This pruning is deliberately delayed and budgeted to reduce the risk of deleting useful capacity too early.
+
+\section{Fused Training Backend}
+
+The fused backend keeps the RGB loss in PyTorch but avoids exposing all per-Gaussian gradients to the PyTorch optimizer. The only boundary quantity needed after the forward pass is
+\begin{equation}
+\frac{\partial\mathcal{L}_{\mathrm{rgb}}}{\partial\hat{\mathbf{I}}_v}.
+\end{equation}
+CUDA kernels propagate this image-space gradient through alpha blending, 2D conic parameters, projected means, 3D covariance, opacity, SH color, and 3D means. The backend then updates Adam moments and Gaussian parameters directly. This design reduces `.grad' tensor traffic, general optimizer bookkeeping, and kernel-launch overhead associated with separate optimizer operations.
+
+\section{Compact Rasterization}
+
+The rasterizer first assigns Gaussians to screen-space tiles. A bounding-box assignment can generate many Gaussian-tile pairs whose actual alpha contribution is negligible, especially near the corners of the projected footprint. FasterGSFusedRapid uses a compact contribution test during preprocessing. For each candidate tile, the rasterizer estimates whether the Gaussian can reach an effective alpha contribution anywhere in that tile. Only passing Gaussian-tile pairs are emitted into the instance list used by sorting, blending, and backward execution.
+
+This optimization does not change the alpha blending formula. It changes which negligible tile candidates are skipped before the expensive tile-local work begins. The compact threshold must therefore be conservative enough to avoid removing contributions that matter for thin structures or fine detail.

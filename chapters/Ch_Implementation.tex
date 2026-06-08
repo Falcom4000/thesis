@@ -1,0 +1,59 @@
+\chapter{Implementation}
+\label{chap:implementation}
+
+\section{Training Pipeline}
+
+The implementation separates Python-side training orchestration from CUDA-side Gaussian execution. Python owns the training loop, camera sampling, ground-truth image access, RGB loss computation, and high-level configuration. CUDA owns Gaussian parameter tensors, rasterization buffers, Adam moments, densification statistics, pruning helpers, and dynamic state synchronization.
+
+In a normal training step, the renderer projects Gaussians, generates compact tile instances, sorts them by tile and depth, and blends tile-local primitive lists into an RGB image. PyTorch computes the L1 and DSSIM loss and obtains the image-space gradient. The custom autograd bridge then forwards this gradient to CUDA, where Gaussian gradients and Adam updates are computed in the same backend path.
+
+\section{Densification Statistics}
+
+Densification requires a signal that indicates local structure pressure. In the fused backend, this signal is accumulated as a side output of the CUDA backward pass rather than by reading a PyTorch `.grad' field. For visible Gaussians, the backend accumulates view-space 2D mean gradient statistics and observation counts. At a densification interval, the callback reads normalized statistics and combines them with multi-view score render results.
+
+The implementation maintains signed and absolute variants of the 2D gradient statistic. Clone decisions use a signed-gradient statistic, while split decisions can use an absolute-gradient statistic. After the densification window ends, the backend can skip densification-statistics accumulation because no later callback consumes it.
+
+\section{Dynamic State Maintenance}
+
+The Gaussian set is dynamic. Clone and split append new entries, while pruning removes entries. Therefore every structural mutation must update all aligned per-Gaussian arrays together: means, scales, rotations, opacities, SH coefficients, Adam moments, densification statistics, pruning counters, and sorting or cache helpers. A key implementation rule is that a structural edit is not complete until parameter tensors and optimizer state have the same indexing.
+
+The implementation also supports Morton ordering as a periodic memory-reordering operation. Morton ordering does not change any Gaussian value or rendering equation. It permutes the storage order so that spatially nearby Gaussians are more likely to have nearby memory indices, improving locality in projection, tile-instance generation, backward propagation, and optimizer update.
+
+\section{Default Configuration}
+
+The current main baseline is the `fastergsfusedrapid-v0.5.0' configuration. Its important settings are:
+
+\begin{table}[H]
+\centering
+\caption{Current main configuration.}
+\label{tab:main-config}
+\begin{tabular}{lll}
+\toprule
+Setting & Value & Role \\
+\midrule
+Initialization & COLMAP/SfM & Matches optimization-style 3DGS baselines \\
+Iterations & 23k & Quality-constrained short schedule \\
+Compact box multiplier & 0.75 & Reduces low-contribution tile work \\
+Score views & 5 & Lowers multi-view score-render overhead \\
+AnySplat initialization & disabled & Not required for the main result \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The default evaluation reports training time, wall time, PSNR, SSIM, paper-style VGG LPIPS, and final Gaussian count. Any optional initializer must report its initialization time separately from the subsequent 3DGS training loop.
+
+\section{Runtime Accounting}
+
+For a training step with $N$ Gaussians, $M$ effective Gaussian-tile instances, and $P$ pixels, the dominant cost can be viewed as
+\begin{equation}
+\mathcal{C}_{\mathrm{step}}
+\approx
+\mathcal{C}_{\mathrm{rast}}(M,P)
++
+\mathcal{C}_{\mathrm{backward}}(M,P)
++
+\mathcal{C}_{\mathrm{adam}}(N).
+\end{equation}
+FasterGSFusedRapid reduces this cost through complementary mechanisms. Structure control limits the growth of $N$ and indirectly $M$. Compact rasterization directly reduces $M$. The fused backend combines backward propagation and Adam update, reducing gradient materialization and optimizer dispatch overhead. A short schedule reduces the number of times this step cost is paid.
+
+Score renders and structural mutations add low-frequency overhead. The method is useful only when this overhead is outweighed by lower Gaussian count, lower tile-instance count, lower optimizer cost, or fewer iterations.

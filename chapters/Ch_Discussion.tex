@@ -1,0 +1,26 @@
+\chapter{Discussion}
+\label{chap:discussion}
+
+\section{What the Method Does Not Change}
+
+FasterGSFusedRapid does not change the core 3DGS representation. It keeps anisotropic Gaussian primitives, SH color, opacity, front-to-back alpha blending, and RGB L1+DSSIM supervision. Its contribution is a training-system redesign: better structure-edit decisions, lower rasterization work, a fused Gaussian optimization backend, and a shorter quality-constrained schedule.
+
+\section{Limitations}
+
+The multi-view score render introduces additional overhead. It is beneficial only when the resulting structure control reduces enough later work to compensate for the score-render cost. The compact tile test must also remain conservative; if the threshold is too aggressive, thin structures or weak but important contributions may be removed before blending.
+
+The current structure-control method should be understood as a practical cost-aware view, not a complete learned controller for Gaussian set optimization. It uses interpretable proxy signals rather than directly optimizing the true marginal loss and cost of every possible clone, split, or delete action.
+
+AnySplat initialization is not part of the current main result. It remains a useful optional initialization path, but it requires coordinate alignment and separate runtime accounting. If its initialization time is included, it must be compared as an end-to-end pipeline rather than as a training-loop-only acceleration.
+
+The current results are centered on Mip-NeRF 360. Further validation is needed on larger scenes, more diverse camera trajectories, and settings where the assumptions of static RGB-only reconstruction are weaker.
+
+\section{Future Work}
+
+Future work can extend the structure-control signal set with depth consistency, surface proximity, local density, perceptual sensitivity, redundancy measures, or temporal consistency for dynamic scenes. Another direction is to make the structure-edit budget adaptive, so the system can spend more score-render effort only when the current Gaussian set shows signs of unstable growth or poor convergence.
+
+The implementation can also be further profiled at the kernel level. In particular, separating projection, compact tile generation, sort, blend, bucket backward, Adam update, score render, and mutation costs would make it easier to decide which part of the backend should receive future engineering effort.
+
+\section{Conclusion}
+
+This thesis presents FasterGSFusedRapid, a fast training pipeline for standard 3D Gaussian Splatting. By decomposing training time into Gaussian count, per-step primitive cost, and iteration count, the method aligns structure control, backend fusion, compact rasterization, and short scheduling under one cost-aware design. The current results show that substantial training-time reduction is possible without changing the 3DGS rendering representation or RGB photometric objective.

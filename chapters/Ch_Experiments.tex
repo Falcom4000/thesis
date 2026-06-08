@@ -1,0 +1,45 @@
+\chapter{Experiments}
+\label{chap:experiments}
+
+This chapter records the current experimental protocol and main results. Full per-scene tables, expanded ablations, and finalized plots will be added after the remaining experiments are completed.
+
+\section{Dataset and Metrics}
+
+The current evaluation uses the nine Mip-NeRF 360 scenes: bicycle, flowers, garden, stump, treehill, room, counter, kitchen, and bonsai. The reported metrics are training time, wall time, PSNR, SSIM, paper-style VGG LPIPS, and final Gaussian count. Unless stated otherwise, the main pipeline uses COLMAP/SfM initialization and does not include optional AnySplat initialization.
+
+\section{Main Result}
+
+Table~\ref{tab:main-result} summarizes the current nine-scene mean results under the local evaluation protocol.
+
+\begin{table}[H]
+\centering
+\caption{Current nine-scene mean comparison.}
+\label{tab:main-result}
+\begin{tabular}{lrrrrr}
+\toprule
+Method & Train time & PSNR & SSIM & LPIPS & Gaussians \\
+\midrule
+Original 3DGS & 1053.54s & 27.5963 & 0.8153 & 0.2138 & 2.625M \\
+RapidGS-big local & 235.93s & 27.9330 & 0.8200 & 0.2160 & 1.161M \\
+FasterGSFusedRapid v0.5.0 & 152.47s & 28.1586 & 0.8289 & 0.2073 & 1.086M \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Compared with the original 3DGS baseline, FasterGSFusedRapid reduces average training time by approximately $6.9\times$. Compared with the local RapidGS-big/FastGS-quality reference, it reduces training time by approximately 35.4 percent while improving PSNR, SSIM, and LPIPS in the current mean result.
+
+\section{Planned Ablations}
+
+The final thesis will separate the contribution of each cost source. The planned ablation axes are:
+
+\begin{itemize}
+  \item structure control: score-gated densification, VCP pruning, score-view budget, and score thresholds;
+  \item training schedule: 30k, 27k, 25k, 23k, 22k, and 21k iterations under the same quality protocol;
+  \item rasterization work: compact-box multiplier, compact rasterization off, and screen-radius pruning;
+  \item backend execution: fused CUDA backward and Adam update versus less specialized optimizer paths;
+  \item initialization: COLMAP/SfM initialization versus optional AnySplat initialization with initialization time reported separately.
+\end{itemize}
+
+\section{Current Interpretation}
+
+The current results suggest that the speedup is not caused by a single switch. Controlled structure editing prevents uncontrolled Gaussian growth, compact rasterization reduces low-value tile work, the fused backend lowers optimizer-path overhead, and the 23k schedule reduces the total number of training steps. The final experimental chapter should therefore report both total training time and intermediate cost indicators such as Gaussian count, tile-instance count, and runtime breakdown.

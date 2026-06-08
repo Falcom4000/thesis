@@ -1,0 +1,93 @@
+\chapter{Problem Formulation}
+\label{chap:problem-formulation}
+
+\section{Input and Output}
+
+The input is a single static scene represented by a set of posed RGB training images
+\begin{equation}
+\mathcal{D}=\{(\mathbf{I}_v,\Pi_v)\}_{v=1}^{V},
+\end{equation}
+where $\mathbf{I}_v$ is the image for view $v$ and $\Pi_v$ denotes its camera parameters. The default pipeline also uses a sparse point cloud from COLMAP/SfM to initialize the Gaussian set. The output is a trained set of 3D Gaussian primitives
+\begin{equation}
+\mathcal{G}=\{G_i\}_{i=1}^{N},
+\end{equation}
+which can render training and novel views through standard 3DGS rasterization.
+
+\section{Gaussian Parameterization}
+
+Each Gaussian is represented as
+\begin{equation}
+G_i =
+\{\boldsymbol{\mu}_i,\mathbf{s}_i,\mathbf{q}_i,o_i,\mathbf{c}_i\},
+\end{equation}
+where $\boldsymbol{\mu}_i \in \mathbb{R}^3$ is the 3D mean, $\mathbf{s}_i \in \mathbb{R}^3$ is the log-space anisotropic scale, $\mathbf{q}_i$ is a quaternion rotation, $o_i$ is the raw opacity logit, and $\mathbf{c}_i$ stores spherical-harmonic color coefficients. The physical opacity is
+\begin{equation}
+\alpha_i^0 = \sigma(o_i).
+\end{equation}
+The 3D covariance is
+\begin{equation}
+\Sigma_i =
+R(\mathbf{q}_i)
+\operatorname{diag}(\exp(2\mathbf{s}_i))
+R(\mathbf{q}_i)^\top .
+\end{equation}
+
+\section{Projection and Alpha Blending}
+
+For camera view $v$, the 3D mean projects to a screen-space location
+\begin{equation}
+\mathbf{u}_{i,v}=\pi_v(\boldsymbol{\mu}_i).
+\end{equation}
+The 2D covariance is computed from the projection Jacobian $J_{i,v}$ and the linear world-to-camera transform $W_v$:
+\begin{equation}
+\Sigma'_{i,v}
+=
+J_{i,v} W_v \Sigma_i W_v^\top J_{i,v}^\top + \lambda I .
+\end{equation}
+Let $Q_{i,v}=(\Sigma'_{i,v})^{-1}$. The screen-space response at pixel $\mathbf{p}$ is
+\begin{equation}
+g_{i,v}(\mathbf{p}) =
+\exp\left(
+-\frac{1}{2}
+(\mathbf{p}-\mathbf{u}_{i,v})^\top
+Q_{i,v}
+(\mathbf{p}-\mathbf{u}_{i,v})
+\right),
+\end{equation}
+and the pixel-level alpha value is
+\begin{equation}
+\alpha_{i,v}(\mathbf{p})=
+\sigma(o_i)g_{i,v}(\mathbf{p}).
+\end{equation}
+
+After depth sorting, the rendered color is produced by front-to-back alpha blending:
+\begin{equation}
+T_{i,v}(\mathbf{p}) =
+\prod_{j<i}(1-\alpha_{j,v}(\mathbf{p})),
+\end{equation}
+\begin{equation}
+\hat{\mathbf{I}}_v(\mathbf{p}) =
+\sum_i
+T_{i,v}(\mathbf{p})
+\alpha_{i,v}(\mathbf{p})
+\mathbf{C}_i(\mathbf{d}_{i,v})
++
+T_{\mathrm{final},v}(\mathbf{p})\mathbf{b}_v .
+\end{equation}
+Here $\mathbf{C}_i(\mathbf{d}_{i,v})$ is the spherical-harmonic color evaluated along the view direction and $\mathbf{b}_v$ is the background color.
+
+\section{Training Objective and Invariants}
+
+FasterGSFusedRapid keeps the standard RGB photometric objective:
+\begin{equation}
+\mathcal{L}_{\mathrm{rgb}}
+=
+\lambda_1
+\|\hat{\mathbf{I}}_v-\mathbf{I}_v\|_1
++
+\lambda_s
+\mathcal{L}_{\mathrm{DSSIM}}
+(\hat{\mathbf{I}}_v,\mathbf{I}_v).
+\end{equation}
+
+The method does not alter the Gaussian primitive, SH color model, alpha blending semantics, or RGB-only supervision. The changes occur in how the dynamic Gaussian set is edited, how rasterization work is selected, and how the backward and optimizer path are executed.
