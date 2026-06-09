@@ -11,6 +11,10 @@ In a normal training step, the renderer projects Gaussians into the selected vie
 
 This boundary keeps the high-level training loop readable while avoiding the most expensive general-purpose optimizer path. The Python side still sees a rendered image and a scalar loss. The CUDA side sees the image gradient and the current Gaussian state. The division is narrow enough to reduce framework overhead but wide enough to preserve ordinary loss construction and evaluation code.
 
+The pipeline is also organized around frequency. Rendering, backward propagation, and Adam updates run on every training iteration. Score rendering, clone/split, pruning, opacity reset, and Morton ordering run only at callback clocks. This separation matters because a low-frequency callback can be relatively expensive and still be useful, while an every-iteration operation must be extremely lean. RapidGS therefore keeps expensive multi-view reasoning out of the hot path and keeps the hot path specialized for a single sampled view.
+
+The implementation avoids treating the Gaussian set as an ordinary static neural-network parameter list. The active primitive count, tile-instance count, SH degree, and auxiliary buffers can change during training. A training iteration therefore passes explicit counts and buffer pointers through the CUDA boundary, rather than relying on a fixed module parameter shape. This makes shape-changing operations visible to the backend and avoids hidden optimizer state owned by a generic framework object.
+
 \section{Python/CUDA Boundary}
 
 The central boundary quantity is
@@ -25,6 +29,10 @@ This tensor has the same image-space shape as the rendered RGB output. It is the
 After receiving $\mathbf{g}_{\mathrm{img}}$, the CUDA backend reconstructs the chain of dependencies from pixels to Gaussians. It accumulates color, opacity, conic, projected-mean, covariance, rotation, scale, and position gradients. The backend then applies Adam updates to the corresponding parameter tensors and moment tensors. From Python's perspective, the rendered image participates in an ordinary autograd graph. From CUDA's perspective, the Gaussian model is an aligned per-primitive data structure rather than a collection of unrelated tensors.
 
 This design also clarifies what the fused backend does not do. It does not change the loss function, and it does not replace RGB supervision with a custom objective. It changes where the per-Gaussian derivative propagation and optimizer update are executed.
+
+The autograd bridge follows an ownership rule: PyTorch owns gradients up to the rendered image, and CUDA owns gradients after the image. In a conventional PyTorch path, each Gaussian parameter tensor would receive a `.grad' tensor, and a Python optimizer would later read that tensor. In RapidGS, the custom backward call consumes $\mathbf{g}_{\mathrm{img}}$ directly and returns no per-Gaussian gradient tensors to Python. This keeps the scalar loss interface intact while removing a large amount of gradient materialization and optimizer dispatch.
+
+The boundary also improves failure isolation. If the loss formulation changes, the bridge still receives an image gradient with the same shape. If the Gaussian parameterization or optimizer layout changes, the CUDA backend can be updated without changing the external loss code. This is useful for thesis experiments because schedule, density-control thresholds, and evaluation hooks can be modified from Python while the high-frequency numerical path remains stable.
 
 \section{Fused Backward and Adam Update}
 
@@ -41,6 +49,12 @@ The parameter update is then applied in place using the active learning-rate sch
 
 The training log may therefore report little or no separate optimizer time. This does not mean that optimization is absent. It means the optimizer work is included in the fused backward/update path.
 
+The CUDA backward path is split into two conceptual stages. The blend backward stage traverses sorted tile buckets and converts image-space gradients into gradients with respect to rendered color, opacity, conic parameters, and projected two-dimensional means. The preprocess backward stage propagates those quantities through SH color evaluation, projection, covariance construction, scale, rotation, opacity activation, and 3D means. The second stage then applies Adam updates in the same parameter layout.
+
+The backend also handles invisible Gaussians explicitly. A Gaussian that touches no tile in the current view receives no image-space gradient, but Adam's time step still advances. The implementation therefore applies zero-gradient Adam decay for invisible rows. This keeps moment evolution consistent with the global iteration count while avoiding unnecessary rasterization work for primitives that are not visible in the sampled camera.
+
+Parameter groups use different learning-rate schedules. Means, SH coefficients, scales, rotations, and opacities have separate step sizes. The fused backend computes the relevant bias-correction factors once per iteration and applies them inside the parameter-specific update helpers. This design preserves the optimizer semantics of standard 3DGS while executing the update in a data layout that is aware of Gaussian identity.
+
 \section{Densification Statistics Side Output}
 
 Densification requires a signal that indicates local structure pressure. In the fused backend, this signal is accumulated as a side output of the CUDA backward pass rather than by reading a PyTorch `.grad' field. For visible Gaussians, the backend accumulates view-space 2D mean gradient statistics and observation counts. At a densification interval, the callback reads normalized statistics and combines them with multi-view score render results.
@@ -48,6 +62,10 @@ Densification requires a signal that indicates local structure pressure. In the 
 The implementation maintains signed and absolute variants of the 2D gradient statistic. Clone decisions use a signed-gradient statistic, while split decisions can use an absolute-gradient statistic. This separation allows the same backward pass to support different structural actions without exposing all intermediate gradients to Python.
 
 After the densification window ends, the backend can skip densification-statistics accumulation because no later callback consumes it. This is a small but important systems detail: statistics should be computed only while they have a downstream user.
+
+The CUDA buffer for densification statistics is organized as three aligned segments. The first segment stores the observation denominator, the second stores the signed view-space gradient statistic, and the third stores the absolute-gradient statistic. During preprocess backward, the projected-mean gradient already exists as an intermediate. RapidGS reuses it, converts it to normalized device-coordinate scale, and accumulates the statistic only when the densification buffer is present.
+
+This optional side output is implemented as a compile-time branch in the launched kernel path. When statistics are required, the branch updates the denominator and both gradient variants. When statistics are not required, the no-statistics path avoids the extra stores and atomics. The same design principle appears throughout the implementation: low-frequency structure signals are attached to an existing computation when possible, and disabled when no callback can use them.
 
 \section{Score-Render Path}
 
@@ -65,6 +83,18 @@ The result is an instance list containing only Gaussian-tile pairs that pass the
 
 The contribution test is a preprocessing optimization, not a change to the blending equation. It should agree with the alpha cutoff used by the renderer. If it is too loose, runtime savings are small. If it is too aggressive, weak but meaningful contributions may be removed. The selected configuration uses a conservative setting that improves speed while preserving the current quality target.
 
+In the CUDA implementation, preprocessing first computes the projected mean, covariance-derived conic, opacity, and a conservative screen-space bound for each active Gaussian. It then evaluates tile candidates against the same effective alpha cutoff used by rasterization. A tile is emitted only if the Gaussian can contribute above the cutoff somewhere in that tile. This is stricter than emitting every tile in a rectangular bound and cheaper than testing every pixel before sorting.
+
+The compact path has two modes for tile enumeration. Small candidate footprints are processed sequentially by the responsible thread. Large footprints are processed cooperatively at warp level, so a single large Gaussian does not leave one lane responsible for a long candidate list while other lanes are idle. This is an implementation detail, but it supports the method-level claim that compact rasterization reduces downstream sort and blend work without redefining alpha blending.
+
+\section{Bucketed Forward and Backward}
+
+After compact tile-instance generation, instances are sorted by tile and depth. Some tiles can still contain long primitive lists, especially in dense regions or in views looking through many semi-transparent splats. RapidGS uses bucketed tile execution so that long lists are divided into fixed-size scheduling units.
+
+The forward pass stores compact checkpoints at bucket boundaries, such as color and transmittance. The backward pass then replays each bucket using those checkpoints instead of storing every intermediate for every primitive and pixel. This design trades a small amount of recomputation for a much smaller memory footprint and better scheduling. It also reduces long-tail imbalance because a heavy tile can be divided into multiple pieces rather than becoming one large unit of work.
+
+Bucket execution is consistent with standard front-to-back compositing. The ordering of primitives within each tile remains depth sorted, and transmittance checkpoints preserve the effect of earlier buckets. Therefore the bucket design is a systems optimization rather than a rendering approximation.
+
 \section{Dynamic State Maintenance}
 
 The Gaussian set is dynamic. Clone and split append new entries, while pruning removes entries. Therefore every structural mutation must update all aligned per-Gaussian arrays together: means, scales, rotations, opacities, SH coefficients, Adam moments, densification statistics, pruning counters, and sorting or cache helpers. A structural edit is not complete until parameter tensors and optimizer state have the same indexing.
@@ -72,6 +102,10 @@ The Gaussian set is dynamic. Clone and split append new entries, while pruning r
 This alignment requirement is a common source of subtle bugs. A parameter row can be visually plausible while its Adam moments belong to a different Gaussian after pruning or sorting. RapidGS avoids this by treating append, mask, and permutation operations as whole-state operations over the Gaussian system.
 
 Split replacement is handled with the same rule. When a parent Gaussian is split, children are appended with initialized parameters and optimizer state. If the parent is later removed, all of its aligned state is removed together. The operation changes the set of active primitives but should not leave stale moments or counters behind.
+
+The same whole-state rule applies to temporary and semi-persistent auxiliary arrays. Densification denominators and gradient statistics are appended or masked with the Gaussian set while they are active. VCP hit counters follow the same index changes during late pruning. Renderer caches that depend on primitive count are invalidated or resized after mutation. This strict indexing discipline is more verbose than relying on framework-managed tensors, but it makes dynamic Gaussian editing predictable.
+
+Opacity reset is another state-maintenance operation. Clamping or resetting opacity changes the parameter value and can invalidate the corresponding Adam moment history. RapidGS clears or updates the affected opacity moments together with the parameter operation. Otherwise the next optimizer step could immediately undo the reset because stale momentum still points in the previous direction.
 
 \section{Morton Ordering and Locality}
 
@@ -86,6 +120,22 @@ Morton ordering is a permutation:
 \mathbf{v}'_i=\mathbf{v}_{\pi(i)}.
 \end{equation}
 It does not change the Gaussian set or any rendering equation. It only changes storage order. The expected benefit is better locality for projection, tile-instance generation, gradient accumulation, and optimizer updates.
+
+Morton ordering is particularly useful after repeated densification. Clone and split append children at the end of storage even when they are spatially close to their parents. Without reordering, nearby Gaussians can become far apart in memory, and kernels that process neighboring spatial regions may fetch scattered parameter rows. Periodic Morton permutation restores a rough spatial locality without changing the optimized scene.
+
+The permutation must be applied to every aligned array. Reordering only means or only SH coefficients would silently corrupt the model. Reordering parameters but not moments would be less visible at first, but it would assign optimizer history to the wrong Gaussian. For this reason, Morton ordering is implemented as a whole-system permutation, just like pruning and append.
+
+\section{RGB-Only CUDA Interface}
+
+The main RapidGS path uses RGB supervision only. The forward interface returns the RGB image and the buffers required for RGB backward. The backward interface consumes RGB image gradients and updates Gaussian parameters. Optional depth or inverse-depth buffers are not part of the main training ABI.
+
+This narrower interface has a practical benefit. Every extra rendered modality adds buffer allocation, kernel arguments, backward paths, and debugging cases. Keeping the ABI RGB-only reduces memory traffic and makes the thesis comparison easier to interpret: quality and speed are measured under the standard 3DGS photometric objective, not under an additional supervision signal.
+
+\section{Memory and Cache Behavior}
+
+The implementation preloads training images to GPU memory when the configuration allows it. Camera matrices and camera positions are cached as contiguous tensors so that repeated view sampling does not rebuild small tensors unnecessarily. Empty sentinel tensors are reused for optional arguments such as absent densification buffers or metric maps.
+
+Shape-changing structure edits can fragment GPU memory because large tensors are appended, masked, and reallocated. RapidGS therefore treats mutation callbacks as natural synchronization points for cache cleanup and buffer resizing. The goal is not to minimize memory use at every line of code, but to keep the high-frequency training path free from repeated small allocations and stale temporary tensors.
 
 \section{Configuration and Runtime Accounting}
 

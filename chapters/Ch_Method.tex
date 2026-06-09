@@ -61,6 +61,20 @@ The edit view also explains why densification and pruning should not be treated 
 
 In practice, the method uses action-specific clocks. Growth is most useful while the representation is still discovering scene structure. Later in training, aggressive growth has less time to pay back its cost. Pruning is useful throughout training but becomes especially important after the structure has mostly formed. Delaying stronger pruning also reduces the chance of deleting a Gaussian that would have become useful after nearby primitives move or split.
 
+This leads to an asymmetric policy. Adding a Gaussian and deleting a Gaussian are not inverse operations, because their failure costs are different. A bad addition mostly increases future computation and can later be removed. A bad deletion removes parameters, optimizer moments, and accumulated statistics, and the system can only recover indirectly by growing new Gaussians in nearby regions. RapidGS therefore uses frequent but gated growth, conservative pruning, and late confirmation for more ambiguous deletion signals.
+
+The action-specific view can be written as
+\begin{equation}
+\mathcal{A}_t
+=
+\mathcal{A}^{+}\mathbb{1}[t\in\mathcal{T}_{+}]
+\cup
+\mathcal{A}^{-}\mathbb{1}[t\in\mathcal{T}_{-}]
+\cup
+\mathcal{A}^{\mathrm{reset}}\mathbb{1}[t\in\mathcal{T}_{\mathrm{reset}}],
+\end{equation}
+where $\mathcal{T}_{+}$, $\mathcal{T}_{-}$, and $\mathcal{T}_{\mathrm{reset}}$ are the active clocks for growth, pruning, and opacity reset. The clocks are part of the method rather than an implementation accident. They determine how long a new Gaussian can repay its cost, how much evidence is required before deletion, and when opacity saturation should be relaxed.
+
 \section{Multi-View High-Error Contribution Score}
 
 The standard 3DGS densification rule relies heavily on view-space gradient magnitude. This signal is useful because it indicates local optimization pressure, but it is also sensitive to single-view noise, occlusion boundaries, background competition, and transient high-error pixels. RapidGS keeps the gradient signal but requires selected candidates to pass a multi-view contribution gate.
@@ -79,6 +93,49 @@ The distinction between contribution count and bbox overlap is central. A projec
 
 The score is deliberately simple. It counts effective participation rather than estimating the exact loss decrease from a hypothetical edit. Exact edit evaluation would require inserting or deleting a candidate, running additional optimization, and measuring multi-view loss again. That would be too expensive for a low-frequency callback. A metric-count render provides a cheaper proxy that can be computed on a small sampled set of views.
 
+The high-error mask is computed from the current photometric residual. For a score view $v$,
+\begin{equation}
+e_v(\mathbf{p})
+=
+\frac{1}{3}
+\left\|
+\hat{\mathbf{I}}_v(\mathbf{p})-\mathbf{I}_v(\mathbf{p})
+\right\|_1,
+\end{equation}
+and the normalized mask is
+\begin{equation}
+M_v(\mathbf{p})
+=
+\mathbb{1}
+\left[
+\frac{e_v(\mathbf{p})-\min_{\mathbf{q}} e_v(\mathbf{q})}
+{\max_{\mathbf{q}} e_v(\mathbf{q})-\min_{\mathbf{q}} e_v(\mathbf{q})+\epsilon}
+>
+\tau_e
+\right].
+\end{equation}
+This normalization makes the score view focus on the relatively difficult pixels in the current image, instead of using a fixed residual threshold that can behave differently across indoor and outdoor scenes.
+
+For densification, the per-Gaussian score is averaged over the sampled score views:
+\begin{equation}
+s_i^{+}
+=
+\frac{1}{|\mathcal{V}_K|}
+\sum_{v\in\mathcal{V}_K}
+\sum_{\mathbf{p}}M_v(\mathbf{p})A_{i,v}(\mathbf{p}).
+\end{equation}
+For pruning, the same contribution evidence is interpreted later in training and can be weighted by view-level residual:
+\begin{equation}
+\tilde{s}_i^{-}
+=
+\sum_{v\in\mathcal{V}_K}
+\ell_v
+\sum_{\mathbf{p}}M_v(\mathbf{p})A_{i,v}(\mathbf{p}),
+\quad
+s_i^{-}=\operatorname{norm}(\tilde{s}_i^{-}).
+\end{equation}
+The two scores share the same rendering statistic but answer different questions. The growth score asks where extra capacity may reduce residual error. The pruning score asks whether an existing primitive repeatedly appears in high-error regions late enough that it may be part of an inconsistent explanation.
+
 \section{Score-Gated Densification}
 
 Growth candidates are first selected by view-space gradient statistics accumulated during training. They are then filtered by the multi-view high-error contribution score. Small Gaussians are cloned to add local capacity, while large Gaussians are split into smaller children to refine coarse structure. The intent is to allocate new primitives to regions where local gradient pressure and multi-view residual evidence agree.
@@ -86,6 +143,41 @@ Growth candidates are first selected by view-space gradient statistics accumulat
 Clone and split serve different structural roles. Cloning preserves the scale of a small Gaussian and adds nearby capacity so that local appearance or geometry can be represented with more degrees of freedom. Splitting is used when a Gaussian is too large and should be replaced by smaller children. This distinction follows the standard 3DGS intuition, but the candidate set is more selective because it must pass the multi-view score gate.
 
 The score gate also limits a common source of runtime growth. If a single-view gradient spike creates many candidates, unconstrained densification can increase the Gaussian count even when the residual is caused by occlusion ordering, background mismatch, or temporary color competition. Requiring multi-view evidence reduces this type of redundant growth. It does not guarantee that every edit is optimal, but it makes the edit policy more aligned with stable scene structure.
+
+Let $g_i^{\mathrm{sgn}}$ denote the accumulated signed view-space gradient magnitude, $g_i^{\mathrm{abs}}$ denote the accumulated absolute-gradient variant, and $d_i$ denote the visibility denominator. The base clone and split candidates are
+\begin{equation}
+c_i^0=
+\mathbb{1}[g_i^{\mathrm{sgn}}\ge \tau_g d_i],
+\quad
+p_i^0=
+\mathbb{1}[g_i^{\mathrm{abs}}\ge \tau_a d_i].
+\end{equation}
+The multi-view gate is then applied as
+\begin{equation}
+c_i=
+c_i^0\land\mathbb{1}[s_i^{+}>\tau_{\mathrm{imp}}],
+\quad
+p_i=
+p_i^0\land\mathbb{1}[s_i^{+}>\tau_{\mathrm{imp}}].
+\end{equation}
+The final action also depends on scale:
+\begin{equation}
+\mathcal{C}_i=c_i\land\mathrm{small}_i,
+\quad
+\mathcal{P}_i=p_i\land\neg\mathrm{small}_i.
+\end{equation}
+This separates the evidence for growth from the geometry of the operation. The score and gradient decide whether extra capacity is useful; the scale test decides whether the capacity should preserve the current footprint or refine it.
+
+For a split parent, children are sampled inside the parent ellipsoid and use a reduced scale:
+\begin{equation}
+\boldsymbol{\mu}'_{i,k}
+=
+\boldsymbol{\mu}_i+
+R(\mathbf{q}_i)\operatorname{diag}(\exp(\mathbf{s}_i))\boldsymbol{\epsilon}_k,
+\quad
+\mathbf{s}'_{i,k}=\mathbf{s}_i+\log\gamma,
+\end{equation}
+where $\gamma<1$ is the shrink factor and $\boldsymbol{\epsilon}_k$ is a small local offset. The parent is marked for removal after its children have been appended. This replacement behavior prevents the coarse parent and its children from explaining the same region indefinitely.
 
 \begin{algorithm}[H]
 \caption{Score-gated densification and pruning}
@@ -109,6 +201,35 @@ Pruning removes Gaussians that are unlikely to justify their future training cos
 The pruning policy is conservative because deletion is irreversible within a single callback. A deleted Gaussian can only be recovered indirectly if later densification creates new capacity nearby. For this reason, pruning combines simple low-risk rules with later multi-view checks. Low opacity is a direct low-contribution signal. Oversized screen-space extent is a cost and quality risk because it can create many tile instances and blur structure. Split-parent removal is a replacement rule: when a coarse parent has been explicitly split, keeping the parent can duplicate the explanation already assigned to its children.
 
 VCP pruning is a later-stage consistency check. It is not ordinary opacity pruning. It examines whether a Gaussian continues to participate in high-error regions under contribution-aware rendering. If such behavior persists late in training, the primitive may be explaining the wrong structure or competing with nearby Gaussians. The method treats these candidates as pruning risks rather than immediate deletions, so thresholds, confirmation, and deletion budget remain important.
+
+The implemented deletion mask combines several signals:
+\begin{equation}
+m_i^{\mathrm{prune}}
+=
+m_i^{\mathrm{opacity}}
+\lor
+m_i^{\mathrm{scale}}
+\lor
+m_i^{\mathrm{score}}
+\lor
+m_i^{\mathrm{replace}}.
+\end{equation}
+The terms have different meanings. The opacity term removes nearly invisible primitives. The scale term removes abnormal splats whose large footprint can create excessive tile work or blurred structure. The score term marks late multi-view inconsistency. The replacement term removes split parents after their children have taken over the local explanation.
+
+For score-based pruning, a candidate is not necessarily deleted the first time it is detected. RapidGS can maintain a hit counter
+\begin{equation}
+H_{i,t}
+=
+\begin{cases}
+\min(H_{i,t-1}+1,H_{\max}), & c_{i,t}^{-}=1,\\
+0, & c_{i,t}^{-}=0,
+\end{cases}
+\end{equation}
+and delete only confirmed candidates. A budget can further restrict the number of score-pruned Gaussians in one callback:
+\begin{equation}
+B_t=\left\lceil\beta|\mathcal{P}_t|\right\rceil .
+\end{equation}
+This keeps late pruning from becoming a sudden structural shock, especially in scenes where high-error regions are concentrated around reflective objects, thin geometry, or unresolved background content.
 
 \section{Short Schedule Under a Quality Constraint}
 
