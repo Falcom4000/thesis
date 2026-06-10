@@ -48,15 +48,14 @@ The color of a Gaussian is represented with spherical-harmonic coefficients. For
 \begin{equation}
 \mathbf{C}_i(\mathbf{d}_{i,v})
 =
-\operatorname{clamp}_{\geq 0}
-\left(
+\frac{1}{2}\mathbf{1}
++
 \sum_{b=0}^{B_t-1}
-Y_b(\mathbf{d}_{i,v})\mathbf{c}_{i,b}
-\right),
+Y_b(\mathbf{d}_{i,v})\mathbf{c}_{i,b},
 \end{equation}
 where $Y_b$ is a spherical-harmonic basis function and $B_t$ is the number of active bases at training step $t$. The active basis count can increase over training so that early optimization focuses on low-frequency appearance before higher-order view-dependent terms are fully enabled.
 
-RapidGS does not change this color model. The fused backend must therefore reproduce the same SH evaluation and backward semantics as the standard path. This constraint is useful because it keeps quality comparisons focused on training efficiency rather than representational capacity.
+The $1/2$ offset follows the common 3DGS coefficient convention. The maintained fused implementation computes this raw SH value in preprocessing and applies a component-wise non-negative clamp when the color is loaded by the blend kernel. Backward uses the corresponding zero derivative for a channel whose raw SH value is negative. The training render is not finally clamped above at one; inference output is clamped to $[0,1]$ after rasterization. This is an implementation-level numerical convention rather than a new color representation.
 
 \section{Projection and Alpha Blending}
 
@@ -86,7 +85,7 @@ and the pixel-level alpha value is
 \sigma(o_i)g_{i,v}(\mathbf{p}).
 \end{equation}
 
-After depth sorting, the rendered color is produced by front-to-back alpha blending:
+For each pixel, let $\pi_{v,\mathbf{p}}(k)$ denote the $k$th Gaussian in front-to-back depth order among the retained tile instances that cover $\mathbf{p}$. To simplify notation below, index $i$ denotes this sorted position rather than the global Gaussian identifier. The rendered color is produced by front-to-back alpha blending:
 \begin{equation}
 T_{i,v}(\mathbf{p}) =
 \prod_{j<i}(1-\alpha_{j,v}(\mathbf{p})),
@@ -128,7 +127,7 @@ RapidGS keeps the standard RGB photometric objective:
 (\hat{\mathbf{I}}_v,\mathbf{I}_v).
 \end{equation}
 
-The method does not alter the Gaussian primitive, SH color model, alpha blending semantics, or RGB-only supervision. The changes occur in how the dynamic Gaussian set is edited, how rasterization work is selected, and how the backward and optimizer path are executed.
+The method does not alter the Gaussian primitive, SH basis representation, front-to-back blending rule for retained instances, or RGB-only supervision. The maintained backend uses the explicit SH clamping convention stated above, and compact rasterization approximates standard tile coverage as specified in Chapter~\ref{chap:method}. The remaining changes occur in how the dynamic Gaussian set is edited and how backward and optimizer execution are organized.
 
 \section{Quality Constraint}
 
@@ -138,6 +137,18 @@ The acceleration objective is constrained by reconstruction quality. A shorter s
 \quad
 \mathrm{s.t.}
 \quad
-Q(\mathcal{G}) \succeq Q_{\mathrm{ref}}-\delta_Q,
+\widetilde{Q}(\mathcal{G})
+\succeq
+\widetilde{Q}_{\mathrm{ref}}-\boldsymbol{\delta}_Q,
 \end{equation}
-where $Q$ denotes a vector of evaluation metrics such as PSNR, SSIM, and LPIPS, and $Q_{\mathrm{ref}}$ is the chosen quality reference. The comparison should not rely on a single metric. For example, a setting can improve LPIPS while increasing Gaussian count and training time too much, or it can improve training time while losing perceptual quality. The thesis therefore treats fast training as a constrained system problem rather than pure runtime minimization.
+where all coordinates are oriented so that larger is better:
+\begin{equation}
+\widetilde{Q}(\mathcal{G})
+=
+\left[
+\operatorname{PSNR}(\mathcal{G}),
+\operatorname{SSIM}(\mathcal{G}),
+-\operatorname{LPIPS}(\mathcal{G})
+\right].
+\end{equation}
+The vector $\boldsymbol{\delta}_Q\ge 0$ specifies a separate allowed degradation for each metric, and $\succeq$ is component-wise order. The comparison should not rely on a single metric. For example, a setting can improve LPIPS while increasing Gaussian count and training time too much, or it can improve training time while losing perceptual quality. The thesis therefore treats fast training as a constrained system problem rather than pure runtime minimization.

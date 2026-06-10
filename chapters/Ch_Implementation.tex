@@ -55,6 +55,66 @@ The backend also handles invisible Gaussians explicitly. A Gaussian that touches
 
 Parameter groups use different learning-rate schedules. Means, SH coefficients, scales, rotations, and opacities have separate step sizes. The fused backend computes the relevant bias-correction factors once per iteration and applies them inside the parameter-specific update helpers. This design preserves the optimizer semantics of standard 3DGS while executing the update in a data layout that is aware of Gaussian identity.
 
+\section{CUDA Kernel Inventory}
+
+Table~\ref{tab:kernel-inventory} lists the maintained rasterization kernels. CUB radix-sort and prefix-scan calls are library operations and are listed by role rather than as project-defined kernels.
+
+\begin{table}[H]
+\centering
+\caption{CUDA kernels and library operations in one training step.}
+\label{tab:kernel-inventory}
+\scriptsize
+\begin{tabular}{p{0.28\linewidth}p{0.64\linewidth}}
+\toprule
+Kernel or operation & Responsibility \\
+\midrule
+\texttt{preprocess\_cu} & Project 3D means, build covariance/conic and SH color, compute compact tile bounds, and count visible primitives and retained tile instances. \\
+CUB depth sort & Sort visible primitive indices by camera-space depth. \\
+\texttt{apply\_depth\_ordering\_cu} & Convert depth-sorted primitive order into per-primitive instance counts for prefix scan. \\
+CUB exclusive scan & Produce write offsets for Gaussian--tile instances. \\
+\texttt{create\_instances\_cu} & Re-evaluate the compact tile test and emit tile keys and primitive indices. \\
+CUB tile sort & Group emitted instances by tile while preserving the previously established depth order. \\
+\texttt{extract\_instance\_}\\\texttt{ranges\_cu} & Build the begin/end range of the sorted instance list for every tile. \\
+\texttt{extract\_bucket\_counts} & Compute the number of fixed-size backward buckets required by each tile. \\
+\texttt{blend\_cu} & Perform front-to-back RGB compositing, optional metric counting, transmittance early termination, and bucket checkpoint storage. \\
+\texttt{blend\_backward\_cu} & Replay tile buckets and accumulate gradients for color, opacity, conic, and projected means. \\
+\texttt{preprocess\_backward\_cu} & Propagate helper gradients to means, scales, rotations, opacity logits, and SH coefficients; update visible rows with Adam; optionally accumulate densification statistics. \\
+\texttt{adam\_step\_invisible} & Apply zero-gradient Adam moment decay and parameter update semantics to rows invisible in the current view. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Tensor Layout and Persistent Memory}
+
+For $N$ Gaussians and maximum SH degree three, all persistent tensors are contiguous CUDA tensors with the layouts in Table~\ref{tab:tensor-layout}. Raw scale and opacity tensors store log-scale and logit values; activation occurs in the renderer. Each Adam tensor appends a final dimension of size two containing first and second moments.
+
+\begin{table}[H]
+\centering
+\caption{Persistent per-Gaussian tensor layout for SH degree three.}
+\label{tab:tensor-layout}
+\begin{tabular}{lll}
+\toprule
+State & Shape & Type \\
+\midrule
+means & $[N,3]$ & float32 \\
+SH DC & $[N,1,3]$ & float32 \\
+SH rest & $[N,15,3]$ & float32 \\
+log-scales & $[N,3]$ & float32 \\
+raw rotations & $[N,4]$ & float32 \\
+opacity logits & $[N,1]$ & float32 \\
+Adam moments & parameter shape $+[2]$ & float32 \\
+densification statistics & $[3,N]$ & float32 \\
+VCP confirmation hits & $[N]$ & int16 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The parameters contain 59 float32 scalars per Gaussian: 3 means, 48 SH values, 3 scales, 4 rotation values, and 1 opacity. Their Adam moments contain 118 additional float32 scalars. With active densification and VCP state, the persistent model-side storage is therefore
+\begin{equation}
+4(59+118+3)+2=722\ \text{bytes per Gaussian},
+\end{equation}
+excluding allocator alignment, PyTorch tensor metadata, renderer workspaces, sorted instance lists, image buffers, and cached training images. After training cleanup removes moments and densification state, the retained model representation is approximately 238 bytes per Gaussian including the int16 VCP buffer, before serialization overhead.
+
 \section{Densification Statistics Side Output}
 
 Densification requires a signal that indicates local structure pressure. In the fused backend, this signal is accumulated as a side output of the CUDA backward pass rather than by reading a PyTorch `.grad' field. For visible Gaussians, the backend accumulates view-space 2D mean gradient statistics and observation counts. At a densification interval, the callback reads normalized statistics and combines them with multi-view score render results.
@@ -107,6 +167,26 @@ The same whole-state rule applies to temporary and semi-persistent auxiliary arr
 
 Opacity reset is another state-maintenance operation. Clamping or resetting opacity changes the parameter value and can invalidate the corresponding Adam moment history. RapidGS clears or updates the affected opacity moments together with the parameter operation. Otherwise the next optimizer step could immediately undo the reset because stale momentum still points in the previous direction.
 
+\begin{algorithm}[H]
+\caption{Aligned mutation of dynamic Gaussian state}
+\label{alg:aligned-mutation}
+\begin{algorithmic}[1]
+\STATE Let $\Theta$ be all parameter tensors, $S$ all Adam moment tensors, and $A$ all active auxiliary tensors
+\STATE Construct clone rows and two split-child rows from the selected parent indices
+\STATE Append child parameter rows to every tensor in $\Theta$
+\STATE Append zero rows with matching leading dimension to every tensor in $S$
+\STATE Append zero VCP counters; invalidate densification statistics after growth
+\STATE Build a mask that removes split parents and compact $(\Theta,S,A)$ with the same mask
+\STATE Build opacity/scale or confirmed VCP deletion mask and compact $(\Theta,S,A)$ again
+\IF{Morton reorder is scheduled}
+  \STATE Compute one permutation $\pi$ from means and apply $\pi$ to every tensor in $(\Theta,S,A)$
+\ENDIF
+\STATE Assert equal leading dimension and contiguous storage for every active per-Gaussian tensor
+\end{algorithmic}
+\end{algorithm}
+
+Clone children copy parent parameters and start with zero moments. Split children copy appearance, opacity, and rotation, sample positions in the parent ellipsoid, shrink scale by $0.625$, and also start with zero moments. The implementation performs split-parent removal immediately after append. Prune and reorder use one boolean mask or one permutation for parameters, moments, densification statistics, and VCP counters.
+
 \section{Morton Ordering and Locality}
 
 Repeated densification appends new Gaussians to the end of tensor storage, even when the new children are spatially close to their parents. Over time, spatially nearby primitives can become scattered in memory. Morton ordering periodically reorders Gaussians by a space-filling curve so that nearby positions tend to have nearby indices.
@@ -136,6 +216,43 @@ This narrower interface has a practical benefit. Every extra rendered modality a
 The implementation preloads training images to GPU memory when the configuration allows it. Camera matrices and camera positions are cached as contiguous tensors so that repeated view sampling does not rebuild small tensors unnecessarily. Empty sentinel tensors are reused for optional arguments such as absent densification buffers or metric maps.
 
 Shape-changing structure edits can fragment GPU memory because large tensors are appended, masked, and reallocated. RapidGS therefore treats mutation callbacks as natural synchronization points for cache cleanup and buffer resizing. The goal is not to minimize memory use at every line of code, but to keep the high-frequency training path free from repeated small allocations and stale temporary tensors.
+
+\section{Numerical Correctness Protocol}
+
+Backend fusion changes execution order and floating-point accumulation order, so correctness is checked against a matched unfused reference rather than by requiring bitwise equality. The validation fixture uses a fixed random seed, a small Gaussian set, one camera, compact multiplier $m=1$, and structure editing disabled. It performs the following checks:
+\begin{enumerate}
+  \item compare forward RGB values from the specialized and reference rasterizers;
+  \item feed the same externally generated image gradient into both backward paths and compare gradients for means, scale logits, raw rotations, opacity logits, SH DC, and SH-rest coefficients;
+  \item initialize identical Adam moments, apply one update with identical learning rates and step index, and compare both moments and updated parameters;
+  \item repeat with invisible Gaussians to verify zero-gradient moment decay and with edge tiles to exercise bounds guards.
+\end{enumerate}
+The acceptance criterion is
+\begin{equation}
+\operatorname{allclose}(x_{\mathrm{fused}},x_{\mathrm{ref}};
+\mathrm{rtol}=10^{-4},\mathrm{atol}=10^{-6})
+\end{equation}
+for forward values, gradients, moments, and updated parameters, with any larger discrepancy reported per parameter group. A finite-difference check on a reduced scene is used as a secondary diagnostic for projection, covariance, and opacity derivatives. This protocol is the reproducibility requirement for backend changes; end-to-end quality alone is insufficient to establish numerical correctness.
+
+\section{Measured Runtime Breakdown}
+
+The fused profiler records Adam work inside \texttt{backward\_ms}; the separate optimizer column is therefore exactly zero by construction. Table~\ref{tab:fused-profile} reports the recorded CUDA-event windows for the \texttt{counter} scene under the 23k configuration. Each entry is the mean over 100 consecutive iterations.
+
+\begin{table}[H]
+\centering
+\caption{Measured fused training-step profile on \texttt{counter}. Backward includes Adam update.}
+\label{tab:fused-profile}
+\begin{tabular}{lrrr}
+\toprule
+Iteration window & Total (ms) & Backward+Adam (ms) & Separate optimizer (ms) \\
+\midrule
+2000--2100 & 4.5536 & 2.5908 & 0.0000 \\
+14000--14100 & 5.1166 & 3.2063 & 0.0000 \\
+22000--22100 & 4.5469 & 2.7407 & 0.0000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These measurements establish where fused update time is accounted for, but they are not a matched PyTorch-versus-fused microbenchmark. A strict fusion speedup table must hold the Gaussian set, visibility lists, image gradient, and optimizer state fixed and time the two update paths on the same GPU. Until that matched experiment is available, the thesis uses end-to-end backend comparisons in Chapter~\ref{chap:experiments} and does not attribute the full training-time difference to fusion alone.
 
 \section{Configuration and Runtime Accounting}
 

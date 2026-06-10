@@ -9,17 +9,14 @@ This chapter expands the cost view introduced in Chapter~\ref{chap:introduction}
 
 The dominant cost is not only the number of pixels. It also depends on how many Gaussians exist, how much of the screen they cover, how many Gaussian-tile instances are generated, how deep the tile-local primitive lists become, and how the optimizer state is updated. These quantities change during training because densification and pruning mutate the Gaussian set. A scene that ends with a compact model may still spend much of training in a high-cost intermediate regime if redundant Gaussians are created early.
 
-For a fixed image resolution and a fixed training dataset, a useful first-order view is
+For a fixed image resolution and a fixed training dataset, the high-level accounting identity is
 \begin{equation}
 T_{\mathrm{train}}
 \approx
-\bar{N}_{\mathrm{gs}}
-\cdot
-c_{\mathrm{opt}}
-\cdot
-N_{\mathrm{iter}},
+\sum_{t=1}^{N_{\mathrm{iter}}}
+\mathcal{C}_{\mathrm{step}}(N_t,M_t,P,\mathcal{B}_t,\mathcal{S}_t),
 \end{equation}
-where $\bar{N}_{\mathrm{gs}}$ is the average number of Gaussians during training, $c_{\mathrm{opt}}$ is the average cost of one step per Gaussian under the current rasterization and optimizer path, and $N_{\mathrm{iter}}$ is the number of optimization steps. The terms are not independent. Increasing the Gaussian count can also increase tile-instance count and memory pressure. Reducing the iteration count can change which densification and pruning events happen. Fusing the optimizer can change the cost profile even when the Gaussian count is unchanged.
+where $N_t$ is Gaussian count, $M_t$ is the emitted Gaussian--tile instance count, $P$ is image size, $\mathcal{B}_t$ describes tile-list and bucket distributions, and $\mathcal{S}_t$ denotes optimizer and auxiliary state. This equation is a conceptual decomposition rather than a predictive kernel model. In particular, rasterization is not linear in $N_t$: two scenes with equal Gaussian count can have very different cost because their screen coverage and tile-instance distributions differ. The variables are also coupled. Increasing $N_t$ can increase $M_t$ and memory pressure; changing the schedule changes which edits occur; and backend fusion changes step cost even when $N_t$ and $M_t$ are fixed.
 
 \section{Average Gaussian Count}
 
@@ -93,4 +90,4 @@ The edit term includes score renders, densification callbacks, pruning callbacks
 
 The cost analysis leads to four design implications. First, density control should be conservative about redundant growth because unnecessary Gaussians create repeated downstream cost. Second, tile-instance generation should remove low-contribution work before sorting and blending because every emitted instance is paid for multiple times. Third, the optimizer path should be specialized for aligned per-Gaussian tensors and dynamic state mutation. Fourth, the training schedule should be chosen under a quality constraint rather than by a fixed inherited iteration count.
 
-RapidGS is built around these implications. Multi-view score-gated densification and VCP pruning act on $\bar{N}_{\mathrm{gs}}$. Compact rasterization acts on $M_t$ and therefore on the rasterization/backward part of $c_{\mathrm{opt}}$. The fused backend acts on gradient materialization, Adam update, and dynamic state maintenance. The selected short schedule acts on $N_{\mathrm{iter}}$. The method is best understood as the combination of these compatible reductions, not as a single isolated acceleration trick.
+RapidGS is built around these implications. Multi-view score-gated densification and VCP pruning act on the trajectory of $N_t$. Compact rasterization acts directly on $M_t$ and the resulting sort, blend, and backward work. The fused backend acts on gradient materialization, Adam update, and dynamic state maintenance. The selected short schedule acts on $N_{\mathrm{iter}}$. The method is best understood as the combination of these compatible reductions, not as a single isolated acceleration trick.
