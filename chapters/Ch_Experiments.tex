@@ -47,6 +47,16 @@ faster than the local fused reference. It also improves all three mean image
 quality metrics in this comparison. This establishes that the short schedule
 does not obtain speed only by accepting a lower reconstruction-quality target.
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.88\textwidth]{figures/quality_speed_tradeoff.pdf}
+\caption{Joint comparison of mean reconstruction quality, training time, and
+final model size on the nine Mip-NeRF 360 scenes. Bubble area is proportional
+to the final Gaussian count. RapidGS moves toward the preferred upper-left
+region: higher PSNR, shorter training time, and a smaller representation.}
+\label{fig:quality-speed-tradeoff}
+\end{figure}
+
 \section{Qualitative Comparison}
 
 Figures~\ref{fig:qualitative-garden}--\ref{fig:qualitative-treehill} compare
@@ -58,7 +68,7 @@ enlarged in the second row. The additional examples were selected from
 held-out views and textured local regions where RapidGS has lower local image
 error than both baselines. They therefore illustrate favorable detail cases
 rather than an unbiased estimate of average visual quality; the aggregate
-metrics in Table~\ref{tab:main-results} provide the latter comparison.
+metrics in Table~\ref{tab:main-result} provide the latter comparison.
 
 \begin{figure}[H]
 \centering

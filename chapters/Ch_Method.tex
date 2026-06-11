@@ -11,6 +11,17 @@ Training alternates between parameter optimization and structure edits. On every
 
 The implementation executes callbacks in descending priority. Consequently, a scheduled structure callback runs before the ordinary optimization step with the same iteration index. It consumes statistics accumulated by earlier training steps, mutates the Gaussian set, resets or reorders auxiliary state as required, and only then renders the next sampled training view. This ordering matters for reproduction: a callback is not applied after the gradient generated at the identically numbered step.
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/rapidgs_pipeline.pdf}
+\caption{Overview of the RapidGS training pipeline. The upper path is executed
+on every iteration and reduces per-step rasterization and optimization cost.
+The lower path runs only at callback clocks and controls Gaussian growth and
+deletion using multi-view evidence. The short quality-constrained schedule
+reduces how often the remaining per-step cost is paid.}
+\label{fig:rapidgs-pipeline}
+\end{figure}
+
 \begin{algorithm}[H]
 \caption{RapidGS training loop}
 \label{alg:training-loop}
