@@ -1,0 +1,80 @@
+{
+  "n_gaussians": 5000,
+  "finite_difference_epsilon": 0.001,
+  "finite_difference": [
+    {
+      "parameter": "means",
+      "flat_index": 7686,
+      "analytic": 2890.319580078125,
+      "numeric": 2835.693359375,
+      "absolute_error": 54.626220703125,
+      "relative_error": 0.018899716515655498
+    },
+    {
+      "parameter": "sh0",
+      "flat_index": 9535,
+      "analytic": 36.168052673339844,
+      "numeric": 35.94970703125,
+      "absolute_error": 0.21834564208984375,
+      "relative_error": 0.00603697534014018
+    },
+    {
+      "parameter": "sh_rest",
+      "flat_index": 143044,
+      "analytic": -75.25270080566406,
+      "numeric": -74.70703125,
+      "absolute_error": 0.5456695556640625,
+      "relative_error": 0.007251162414399238
+    },
+    {
+      "parameter": "scales",
+      "flat_index": 10341,
+      "analytic": 62.981292724609375,
+      "numeric": 88.9892578125,
+      "absolute_error": 26.007965087890625,
+      "relative_error": 0.29225960219478736
+    },
+    {
+      "parameter": "rotations",
+      "flat_index": 9927,
+      "analytic": 664.6691284179688,
+      "numeric": 643.73779296875,
+      "absolute_error": 20.93133544921875,
+      "relative_error": 0.03149136097089249
+    },
+    {
+      "parameter": "opacities",
+      "flat_index": 2556,
+      "analytic": -15.655204772949219,
+      "numeric": -15.56396484375,
+      "absolute_error": 0.09123992919921875,
+      "relative_error": 0.005828089157726836
+    }
+  ],
+  "adam_update": [
+    {
+      "parameter": "means",
+      "max_absolute_error": 9.313225746154785e-10
+    },
+    {
+      "parameter": "sh0",
+      "max_absolute_error": 1.4901161193847656e-08
+    },
+    {
+      "parameter": "sh_rest",
+      "max_absolute_error": 9.313225746154785e-10
+    },
+    {
+      "parameter": "scales",
+      "max_absolute_error": 9.5367431640625e-07
+    },
+    {
+      "parameter": "rotations",
+      "max_absolute_error": 7.450580596923828e-09
+    },
+    {
+      "parameter": "opacities",
+      "max_absolute_error": 4.76837158203125e-07
+    }
+  ]
+}

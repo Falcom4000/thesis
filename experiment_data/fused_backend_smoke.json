@@ -1,0 +1,27 @@
+{
+  "timings": [
+    {
+      "n_gaussians": 5000,
+      "reference_forward_ms_mean": 0.3547839969396591,
+      "reference_forward_ms_std": 0.0006788382155407147,
+      "reference_backward_ms_mean": 0.5103839933872223,
+      "reference_backward_ms_std": 0.009526157140977801,
+      "reference_optimizer_ms_mean": 1.0221759676933289,
+      "reference_optimizer_ms_std": 0.007105031428269494,
+      "fused_forward_ms_mean": 0.3076319992542267,
+      "fused_forward_ms_std": 0.000837204998820399,
+      "fused_backward_update_ms_mean": 0.27827200293540955,
+      "fused_backward_update_ms_std": 0.007829072138838144,
+      "reference_backward_update_ms_mean": 1.5325599610805511,
+      "speedup_backward_update": 5.5074170053545695
+    }
+  ],
+  "correctness": [
+    {
+      "n_gaussians": 5000,
+      "forward_max_abs": 0.004518652334809303,
+      "parameter_max_abs_after_step": 0.017266273498535156,
+      "moment_max_abs_after_step": 7528.1767578125
+    }
+  ]
+}

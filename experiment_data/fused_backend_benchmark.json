@@ -1,0 +1,69 @@
+{
+  "timings": [
+    {
+      "n_gaussians": 50000,
+      "reference_forward_ms_mean": 0.46005375862121584,
+      "reference_forward_ms_std": 0.03496607789462507,
+      "reference_backward_ms_mean": 0.7874284791946411,
+      "reference_backward_ms_std": 0.041648844142580736,
+      "reference_optimizer_ms_mean": 0.9361203229427337,
+      "reference_optimizer_ms_std": 0.051630768862052895,
+      "fused_forward_ms_mean": 0.47112256050109863,
+      "fused_forward_ms_std": 0.013833547661809057,
+      "fused_backward_update_ms_mean": 0.6354003190994263,
+      "fused_backward_update_ms_std": 0.02622866653280206,
+      "reference_backward_update_ms_mean": 1.7235488021373748,
+      "speedup_backward_update": 2.7125400323692266
+    },
+    {
+      "n_gaussians": 500000,
+      "reference_forward_ms_mean": 0.49919232189655305,
+      "reference_forward_ms_std": 0.009836161826499748,
+      "reference_backward_ms_mean": 1.3748051142692566,
+      "reference_backward_ms_std": 0.03976305770343609,
+      "reference_optimizer_ms_mean": 2.800903663635254,
+      "reference_optimizer_ms_std": 0.15420577725621054,
+      "fused_forward_ms_mean": 0.5576665592193604,
+      "fused_forward_ms_std": 0.02188328710733955,
+      "fused_backward_update_ms_mean": 1.6823846411705017,
+      "fused_backward_update_ms_std": 0.08762178846644147,
+      "reference_backward_update_ms_mean": 4.175708777904511,
+      "speedup_backward_update": 2.482017890391168
+    },
+    {
+      "n_gaussians": 1246858,
+      "reference_forward_ms_mean": 0.9692991983890533,
+      "reference_forward_ms_std": 0.011683777410191623,
+      "reference_backward_ms_mean": 2.850840334892273,
+      "reference_backward_ms_std": 0.04706053546012158,
+      "reference_optimizer_ms_mean": 5.8395955276489255,
+      "reference_optimizer_ms_std": 0.13794559582208654,
+      "fused_forward_ms_mean": 0.852979838848114,
+      "fused_forward_ms_std": 0.02157065320329512,
+      "fused_backward_update_ms_mean": 3.616252784729004,
+      "fused_backward_update_ms_std": 0.04276503089247233,
+      "reference_backward_update_ms_mean": 8.690435862541198,
+      "speedup_backward_update": 2.403160503391758
+    }
+  ],
+  "correctness": [
+    {
+      "n_gaussians": 50000,
+      "forward_max_abs": 0.002916991710662842,
+      "parameter_max_abs_after_step": 0.02349090576171875,
+      "moment_max_abs_after_step": 37811.6015625
+    },
+    {
+      "n_gaussians": 500000,
+      "forward_max_abs": 0.002916991710662842,
+      "parameter_max_abs_after_step": 0.025565147399902344,
+      "moment_max_abs_after_step": 9392.7890625
+    },
+    {
+      "n_gaussians": 1246858,
+      "forward_max_abs": 0.02232368290424347,
+      "parameter_max_abs_after_step": 0.025848865509033203,
+      "moment_max_abs_after_step": 28853.5234375
+    }
+  ]
+}
