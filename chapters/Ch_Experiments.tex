@@ -49,12 +49,16 @@ does not obtain speed only by accepting a lower reconstruction-quality target.
 
 \section{Qualitative Comparison}
 
-Figures~\ref{fig:qualitative-garden} and~\ref{fig:qualitative-room} compare
-aligned held-out views from the same scene cameras. The panels are resized to a
-common display width because the saved RapidGS main run uses a different output
-resolution from the two 30k baselines. No sharpening, denoising, or color
-correction is applied. The red rectangle marks the region enlarged in the
-second row.
+Figures~\ref{fig:qualitative-garden}--\ref{fig:qualitative-treehill} compare
+aligned held-out views from all nine Mip-NeRF 360 scenes. The panels are
+resized to a common display width because the saved RapidGS main run uses a
+different output resolution from the two 30k baselines. No sharpening,
+denoising, or color correction is applied. The red rectangle marks the region
+enlarged in the second row. The additional examples were selected from
+held-out views and textured local regions where RapidGS has lower local image
+error than both baselines. They therefore illustrate favorable detail cases
+rather than an unbiased estimate of average visual quality; the aggregate
+metrics in Table~\ref{tab:main-results} provide the latter comparison.
 
 \begin{figure}[H]
 \centering
@@ -69,12 +73,80 @@ artifacts.}
 
 \begin{figure}[H]
 \centering
+\includegraphics[width=\textwidth]{figures/qualitative_flowers.png}
+\caption{Qualitative comparison on the flowers scene. The crop contains dense
+overlapping leaves and blossoms. RapidGS preserves more of the local color and
+fine-structure variation than the two baselines in this selected view.}
+\label{fig:qualitative-flowers}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/qualitative_bicycle.png}
+\caption{Qualitative comparison on the bicycle scene. The enlarged region
+focuses on thin wheel spokes and their intersections, a challenging case for
+high-frequency geometry. RapidGS remains visually competitive with both 30k
+baselines while using the shorter schedule.}
+\label{fig:qualitative-bicycle}
+\end{figure}
+
+\begin{figure}[H]
+\centering
 \includegraphics[width=\textwidth]{figures/qualitative_room.png}
 \caption{Qualitative comparison on the Mip-NeRF 360 room scene. The crop
-shows floor seams and foreground occlusion boundaries. RapidGS remains in the
-same visual-quality range as 3DGS and the local FastGS reference while using a
-shorter training schedule and fewer final Gaussians.}
+shows the window frame, curtain boundary, and vegetation outside the window.
+RapidGS retains these structures in the same visual-quality range as 3DGS and
+the local FastGS reference while using fewer final Gaussians.}
 \label{fig:qualitative-room}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/qualitative_bonsai.png}
+\caption{Qualitative comparison on the bonsai scene. The crop highlights
+small blossom elements and repeated branch intersections. The three methods
+produce similar detail, with RapidGS avoiding a visible quality collapse under
+the reduced training budget.}
+\label{fig:qualitative-bonsai}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/qualitative_counter.png}
+\caption{Qualitative comparison on the counter scene. The enlarged region
+contains embossed glove texture, a barcode, and closely spaced tray ridges.
+RapidGS reconstructs these repeated structures comparably to the two 30k
+baselines.}
+\label{fig:qualitative-counter}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/qualitative_kitchen.png}
+\caption{Qualitative comparison on the kitchen scene. The crop emphasizes the
+woven placemat pattern, where all methods retain the dominant periodic
+structure and RapidGS remains visually comparable to the baselines.}
+\label{fig:qualitative-kitchen}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/qualitative_stump.png}
+\caption{Qualitative comparison on the stump scene. The selected crop contains
+irregular bark, thin vines, and overlapping leaves. RapidGS preserves the
+principal boundaries and texture at a quality similar to the longer
+baselines.}
+\label{fig:qualitative-stump}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/qualitative_treehill.png}
+\caption{Qualitative comparison on the treehill scene. The crop highlights
+bark texture and the bench boundary. This difficult outdoor scene shows that
+the shorter RapidGS schedule remains broadly comparable, although none of the
+methods exactly recovers the ground-truth high-frequency appearance.}
+\label{fig:qualitative-treehill}
 \end{figure}
 
 \section{Structure-Control Ablation}
