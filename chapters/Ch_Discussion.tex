@@ -11,13 +11,13 @@ The boundary also defines what the method cannot claim. It is not a new radiance
 
 \section{Limitations}
 
-The multi-view score render introduces additional overhead. It is beneficial only when the resulting structure control reduces enough later work to compensate for the score-render cost. The compact tile test must also remain conservative; if the threshold is too aggressive, thin structures or weak but important contributions may be removed before blending.
+The multi-view score-rendering pass introduces additional overhead. It is beneficial only when the resulting structure control reduces enough subsequent work to compensate for the score-rendering cost. The compact tile test must also remain conservative; if the threshold is too aggressive, thin structures or weak but important contributions may be removed before blending.
 
 The current structure-control method should be understood as a practical cost-aware view, not a complete learned controller for Gaussian set optimization. It uses interpretable proxy signals rather than directly optimizing the true marginal loss and cost of every possible clone, split, or delete action.
 
 AnySplat initialization is not part of the current main result. It remains a useful optional initialization path, but it requires coordinate alignment and separate runtime accounting. If its initialization time is included, it must be compared as an end-to-end pipeline rather than as a training-loop-only acceleration.
 
-The current results are centered on Mip-NeRF 360. Further validation is needed on larger scenes, more diverse camera trajectories, and settings where the assumptions of static RGB-only reconstruction are weaker.
+The evaluation is centered on Mip-NeRF 360, with additional experiments on four scenes from Tanks and Temples and Deep Blending. Further validation is needed on larger scenes, more diverse camera trajectories, and settings in which the assumptions of static RGB-only reconstruction are weaker.
 
 \section{Engineering Trade-Offs}
 
@@ -25,7 +25,7 @@ The fused backend improves the hot path, but it increases implementation complex
 
 The compact rasterization path has a similar trade-off. It reduces unnecessary tile work, but it adds another contribution test to the preprocessing stage. The test must stay consistent with the renderer's alpha cutoff and numerical conventions. If the renderer changes its opacity activation, cutoff, or tile geometry, the compact test should be checked again.
 
-Multi-view score rendering also trades callback overhead for better structure decisions. The score path should remain low frequency and budgeted. If it is run too often or on too many views, it can erase part of the runtime benefit it is meant to create.
+Multi-view score rendering also trades callback overhead for better structure decisions. The score path should remain low-frequency and budgeted. If it is run too often or on too many views, it can erase part of the runtime benefit it is intended to create.
 
 \section{Reproducibility Considerations}
 

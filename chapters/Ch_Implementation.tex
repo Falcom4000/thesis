@@ -30,13 +30,13 @@ After receiving $\mathbf{g}_{\mathrm{img}}$, the CUDA backend reconstructs the c
 
 This design also clarifies what the fused backend does not do. It does not change the loss function, and it does not replace RGB supervision with a custom objective. It changes where the per-Gaussian derivative propagation and optimizer update are executed.
 
-The autograd bridge follows an ownership rule: PyTorch owns gradients up to the rendered image, and CUDA owns gradients after the image. In a conventional PyTorch path, each Gaussian parameter tensor would receive a `.grad' tensor, and a Python optimizer would later read that tensor. In RapidGS, the custom backward call consumes $\mathbf{g}_{\mathrm{img}}$ directly and returns no per-Gaussian gradient tensors to Python. This keeps the scalar loss interface intact while removing a large amount of gradient materialization and optimizer dispatch.
+The autograd bridge follows an ownership rule: PyTorch owns gradients up to the rendered image, and CUDA owns gradients after the image. In a conventional PyTorch path, each Gaussian parameter tensor would receive a \texttt{.grad} tensor, and a Python optimizer would later read that tensor. In RapidGS, the custom backward call consumes $\mathbf{g}_{\mathrm{img}}$ directly and returns no per-Gaussian gradient tensors to Python. This keeps the scalar loss interface intact while removing a large amount of gradient materialization and optimizer dispatch.
 
 The boundary also improves failure isolation. If the loss formulation changes, the bridge still receives an image gradient with the same shape. If the Gaussian parameterization or optimizer layout changes, the CUDA backend can be updated without changing the external loss code. This is useful for thesis experiments because schedule, density-control thresholds, and evaluation hooks can be modified from Python while the high-frequency numerical path remains stable.
 
 \section{Fused Backward and Adam Update}
 
-The standard optimizer path materializes per-parameter `.grad' tensors and then calls a general optimizer. This works for many neural networks, but 3DGS has millions of parameter rows that share the same Gaussian identity. The fused backend exploits this structure by computing gradients and updating Adam moments in the same CUDA-side state layout.
+The standard optimizer path materializes per-parameter \texttt{.grad} tensors and then calls a general optimizer. This works for many neural networks, but 3DGS has millions of parameter rows that share the same Gaussian identity. The fused backend exploits this structure by computing gradients and updating Adam moments in the same CUDA-side state layout.
 
 For each Gaussian parameter $\theta_i$, Adam maintains first and second moments:
 \begin{equation}
@@ -117,7 +117,7 @@ excluding allocator alignment, PyTorch tensor metadata, renderer workspaces, sor
 
 \section{Densification Statistics Side Output}
 
-Densification requires a signal that indicates local structure pressure. In the fused backend, this signal is accumulated as a side output of the CUDA backward pass rather than by reading a PyTorch `.grad' field. For visible Gaussians, the backend accumulates view-space 2D mean gradient statistics and observation counts. At a densification interval, the callback reads normalized statistics and combines them with multi-view score render results.
+Densification requires a signal that indicates local structure pressure. In the fused backend, this signal is accumulated as a side output of the CUDA backward pass rather than by reading a PyTorch \texttt{.grad} field. For visible Gaussians, the backend accumulates view-space 2D mean gradient statistics and observation counts. At each densification callback, the system reads the normalized statistics and combines them with multi-view score-rendering results.
 
 The implementation maintains signed and absolute variants of the 2D gradient statistic. Clone decisions use a signed-gradient statistic, while split decisions can use an absolute-gradient statistic. This separation allows the same backward pass to support different structural actions without exposing all intermediate gradients to Python.
 
@@ -133,7 +133,7 @@ The score-render path is a low-frequency auxiliary path used by structure editin
 
 The score path is deliberately separated from the ordinary training step. Running it every iteration would be too expensive. Running it only at structure-edit clocks makes its cost easier to amortize. The number of sampled score views is therefore a budget parameter: more views can improve multi-view stability, but they also increase callback time.
 
-The implementation treats the score as temporary structure-control evidence, not as a trainable parameter. After the edit decision is made, the score can be discarded or reset. This avoids adding persistent state that would have to be maintained through every mutation.
+The implementation treats the score as temporary evidence for structure control rather than as a trainable parameter. After the edit decision is made, the score can be discarded or reset. This avoids adding persistent state that would have to be maintained through every mutation.
 
 \section{Compact Tile-Instance Generation}
 
@@ -141,7 +141,7 @@ Rasterization begins by determining which Gaussians should be considered by whic
 
 The result is an instance list containing only Gaussian-tile pairs that pass the contribution test. This list is then sorted and consumed by the ordinary tile-local blending and backward kernels. Skipped instances do not enter sort, forward blend, or backward accumulation.
 
-The contribution test is a preprocessing optimization, not a change to the blending equation. It should agree with the alpha cutoff used by the renderer. If it is too loose, runtime savings are small. If it is too aggressive, weak but meaningful contributions may be removed. The selected configuration uses a conservative setting that improves speed while preserving the current quality target.
+The contribution test is a preprocessing optimization, not a change to the blending equation. It should agree with the alpha cutoff used by the renderer. If it is too loose, runtime savings are small. If it is too aggressive, weak but meaningful contributions may be removed. The selected configuration uses a conservative setting that improves speed while preserving the target quality level.
 
 In the CUDA implementation, preprocessing first computes the projected mean, covariance-derived conic, opacity, and a conservative screen-space bound for each active Gaussian. It then evaluates tile candidates against the same effective alpha cutoff used by rasterization. A tile is emitted only if the Gaussian can contribute above the cutoff somewhere in that tile. This is stricter than emitting every tile in a rectangular bound and cheaper than testing every pixel before sorting.
 
@@ -252,11 +252,11 @@ Iteration window & Total (ms) & Backward+Adam (ms) & Separate optimizer (ms) \\
 \end{tabular}
 \end{table}
 
-These measurements establish where fused update time is accounted for, but they are not a matched PyTorch-versus-fused microbenchmark. A strict fusion speedup table must hold the Gaussian set, visibility lists, image gradient, and optimizer state fixed and time the two update paths on the same GPU. Until that matched experiment is available, the thesis uses end-to-end backend comparisons in Chapter~\ref{chap:experiments} and does not attribute the full training-time difference to fusion alone.
+These measurements establish where fused update time is accounted for, but they are not a matched reference-versus-fused microbenchmark. The controlled microbenchmark in Chapter~\ref{chap:experiments} holds the Gaussian set, image gradient, and optimizer state fixed while timing both update paths on the same GPU. The end-to-end results are reported separately because data loading, forward rasterization, loss evaluation, structure callbacks, and evaluation renders are outside the microbenchmark.
 
 \section{Configuration and Runtime Accounting}
 
-The current main configuration uses COLMAP/SfM initialization, a short quality-constrained schedule, compact tile-instance generation, a small score-view budget, and disabled optional external Gaussian initialization. Its important settings are summarized in Table~\ref{tab:main-config}.
+The main configuration uses COLMAP/SfM initialization, a short quality-constrained schedule, compact tile-instance generation, a small score-view budget, and no optional external Gaussian initialization. Its important settings are summarized in Table~\ref{tab:main-config}.
 
 \begin{table}[H]
 \centering

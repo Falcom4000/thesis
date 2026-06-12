@@ -48,7 +48,7 @@ reduces how often the remaining per-step cost is paid.}
 
 A fast 3DGS trainer must avoid two opposite failure modes. If it grows too few Gaussians, the model lacks capacity and loses detail. If it grows too many Gaussians, training becomes expensive and later pruning has to spend effort undoing earlier decisions. The standard view-space gradient signal is useful, but it is local and view-dependent. It can identify where a projected Gaussian is sensitive to image-space movement, but it cannot by itself tell whether the signal corresponds to stable multi-view structure or a transient residual.
 
-The proposed design keeps the gradient signal because it is cheap and directly tied to the differentiable rasterizer. It then adds a multi-view contribution gate that asks a different question: did this Gaussian actually participate in explaining high-error pixels across sampled views? The combination is more selective than either signal alone. High gradient without multi-view contribution can indicate local instability. Multi-view high-error contribution without sufficient gradient may indicate residual error nearby, but not necessarily a useful clone or split candidate. Growth is strongest when both signals agree.
+The proposed design keeps the gradient signal because it is inexpensive and directly tied to the differentiable rasterizer. It then adds a multi-view contribution gate to determine whether the Gaussian actually participates in explaining high-error pixels across sampled views. The combination is more selective than either signal alone. A high gradient without multi-view contribution can indicate local instability. Multi-view high-error contribution without a sufficient gradient may indicate residual error nearby, but not necessarily a useful clone or split candidate. The evidence for growth is strongest when both signals agree.
 
 Pruning uses related observations with a different interpretation. A low-opacity Gaussian is unlikely to contribute much color. A large or abnormal Gaussian can explain too broad a region and create unnecessary tile work. A split parent can become redundant after its children are inserted. A Gaussian that repeatedly participates in high-error regions late in training may be part of an inconsistent explanation rather than useful structure. These deletion rules are intentionally not the mirror image of densification rules; adding and deleting have different risks and should run on different clocks.
 
@@ -101,7 +101,7 @@ Table~\ref{tab:method-schedule} gives the main 23k schedule. Iteration bounds fo
 Action & Active iterations & Interval \\
 \midrule
 Extra opacity reset & 500 & once for non-black background \\
-Score-gated densification & $600\le t<15{,}000$ & 100 \\
+VCD & $600\le t<15{,}000$ & 100 \\
 SH degree increase & $t\ge 1{,}000$ & 1,000 \\
 Opacity reset & $3{,}000\le t<15{,}000$ & 3,000 \\
 Morton ordering & $0\le t<15{,}000$ & 5,000 \\
@@ -135,13 +135,13 @@ i\ \text{is visited before early termination at }\mathbf{p}
 \alpha_{i,v}(\mathbf{p})\ge\tau_\alpha
 \right].
 \end{equation}
-The implementation uses $\tau_\alpha=1/255$ and terminates a pixel when its running transmittance falls below $\tau_T=10^{-4}$. Gaussians after this termination point are not counted. The count is binary per Gaussian--pixel visit: it does not use the raw opacity alone, but it also does not weight the count by $T_{i,v}(\mathbf{p})\alpha_{i,v}(\mathbf{p})$. Transmittance affects the statistic through visibility and early termination. This exact definition avoids conflating metric count with either bbox overlap or a continuous contribution integral.
+The implementation uses $\tau_\alpha=1/255$ and terminates a pixel when its running transmittance falls below $\tau_T=10^{-4}$. Gaussians after this termination point are not counted. The count is binary per Gaussian--pixel visit: it does not use the raw opacity alone, but it also does not weight the count by $T_{i,v}(\mathbf{p})\alpha_{i,v}(\mathbf{p})$. Transmittance affects the statistic through visibility and early termination. This exact definition avoids conflating metric count with either bounding-box overlap or a continuous contribution integral.
 
-The distinction between contribution count and bbox overlap is central. A projected bbox only indicates that a Gaussian might affect a tile or pixel. It ignores opacity, Gaussian falloff, transmittance, and early termination in alpha blending. A contribution-aware count is closer to the training computation because it follows the same visibility path that produces the rendered RGB image. This makes the score better aligned with the question asked by density control: whether a Gaussian is actually involved in image formation where the model currently has residual error.
+The distinction between contribution count and bounding-box overlap is central. A projected bounding box only indicates that a Gaussian might affect a tile or pixel. It ignores opacity, Gaussian falloff, transmittance, and early termination in alpha blending. A contribution-aware count is closer to the training computation because it follows the same visibility path that produces the rendered RGB image. This makes the score better aligned with the question asked by density control: whether a Gaussian is actually involved in image formation where the model currently has residual error.
 
 The score is deliberately simple. It counts effective participation rather than estimating the exact loss decrease from a hypothetical edit. Exact edit evaluation would require inserting or deleting a candidate, running additional optimization, and measuring multi-view loss again. That would be too expensive for a low-frequency callback. A metric-count render provides a cheaper proxy that can be computed on a small sampled set of views.
 
-The high-error mask is computed from a score render that is not finally clamped to $[0,1]$. The SH color entering blending is still clamped component-wise to be non-negative, matching the training rasterizer. For a score view $v$,
+The high-error mask is computed from a score render with no final clamp to $[0,1]$. The SH color entering blending is still clamped component-wise to be non-negative, matching the training rasterizer. For a score view $v$,
 \begin{equation}
 e_v(\mathbf{p})
 =
@@ -192,13 +192,17 @@ s_i^{-}=\operatorname{norm}(\tilde{s}_i^{-}).
 \end{equation}
 Here $\ell_v=0.8\mathcal{L}_{1,v}+0.2\mathcal{L}_{\mathrm{DSSIM},v}$ and $\operatorname{norm}$ is min--max normalization over the current Gaussian set, with the same $10^{-12}$ constant-range guard. The integer floor in $s_i^{+}$ is part of the implementation. Since the gate uses the strict comparison $s_i^{+}>5$, a Gaussian must have an integer average metric count of at least six in the main configuration. The two scores share the same rendering statistic but answer different questions. The growth score asks where extra capacity may reduce residual error. The pruning score asks whether an existing primitive repeatedly appears in high-error regions late enough that it may be part of an inconsistent explanation.
 
-\section{Score-Gated Densification}
+\section{Multi-View Consistent Densification}
+
+RapidGS uses multi-view consistent densification (VCD) for score-gated growth.
+The name follows FastGS; the equations below specify this implementation's
+score, threshold, callback schedule, and gradient statistics.
 
 Growth candidates are first selected by view-space gradient statistics accumulated during training. They are then filtered by the multi-view high-error contribution score. Small Gaussians are cloned to add local capacity, while large Gaussians are split into smaller children to refine coarse structure. The intent is to allocate new primitives to regions where local gradient pressure and multi-view residual evidence agree.
 
-Clone and split serve different structural roles. Cloning preserves the scale of a small Gaussian and adds nearby capacity so that local appearance or geometry can be represented with more degrees of freedom. Splitting is used when a Gaussian is too large and should be replaced by smaller children. This distinction follows the standard 3DGS intuition, but the candidate set is more selective because it must pass the multi-view score gate.
+Clone and split serve different structural roles. Cloning preserves the scale of a small Gaussian and adds nearby capacity so that local appearance or geometry can be represented with more degrees of freedom. Splitting is used when a Gaussian is too large and should be replaced by smaller children. This distinction follows the standard 3DGS intuition, but VCD makes the candidate set more selective by applying the multi-view score criterion.
 
-The score gate also limits a common source of runtime growth. If a single-view gradient spike creates many candidates, unconstrained densification can increase the Gaussian count even when the residual is caused by occlusion ordering, background mismatch, or temporary color competition. Requiring multi-view evidence reduces this type of redundant growth. It does not guarantee that every edit is optimal, but it makes the edit policy more aligned with stable scene structure.
+VCD also limits a common source of runtime growth. If a single-view gradient spike creates many candidates, unconstrained densification can increase the Gaussian count even when the residual is caused by occlusion ordering, background mismatch, or temporary color competition. Requiring multi-view evidence reduces this type of redundant growth. It does not guarantee that every edit is optimal, but it makes the edit policy more aligned with stable scene structure.
 
 Let $\mathbf{h}_{i,t}$ be the projected-mean gradient accumulated over all contributing pixels of training step $t$. The fused backward path stores three quantities over one densification interval:
 \begin{equation}
@@ -342,11 +346,11 @@ The schedule criterion is multi-metric. A setting should not be accepted only be
 
 \section{Fused Training Backend}
 
-The fused backend keeps the RGB loss in PyTorch but avoids exposing all per-Gaussian gradients to the PyTorch optimizer. The only boundary quantity needed after the forward pass is
+The fused backend keeps the RGB loss in PyTorch but avoids exposing all per-Gaussian gradients to the PyTorch optimizer. The only quantity that must cross this boundary after the forward pass is
 \begin{equation}
 \frac{\partial\mathcal{L}_{\mathrm{rgb}}}{\partial\hat{\mathbf{I}}_v}.
 \end{equation}
-CUDA kernels propagate this image-space gradient through alpha blending, 2D conic parameters, projected means, 3D covariance, opacity, SH color, and 3D means. The backend then updates Adam moments and Gaussian parameters directly. This design reduces `.grad' tensor traffic, general optimizer bookkeeping, and kernel-launch overhead associated with separate optimizer operations.
+CUDA kernels propagate this image-space gradient through alpha blending, 2D conic parameters, projected means, 3D covariance, opacity, SH color, and 3D means. The backend then updates Adam moments and Gaussian parameters directly. This design reduces \texttt{.grad} tensor traffic, general optimizer bookkeeping, and the kernel-launch overhead associated with separate optimizer operations.
 
 This design keeps the loss interface flexible while specializing the expensive Gaussian path. Loss composition remains in Python, so the training loop can still combine RGB terms, logging, and evaluation in a familiar way. The backend only requires the gradient of the scalar loss with respect to the rendered image. From that point onward, all per-Gaussian work is handled in a layout that knows the Gaussian structure and can update parameters and moments consistently.
 
@@ -367,7 +371,7 @@ Q_i
 \qquad
 \alpha_i(\mathbf{p})=o_i\exp[-q_i(\mathbf{p})],
 \end{equation}
-where $Q_i$ is the positive-definite conic matrix and $o_i$ is activated opacity. For a tile region $\mathcal{R}$, the implementation finds the point in the tile that minimizes this quadratic form using the projected ellipse and tile rectangle geometry. This gives
+where $Q_i$ is the positive-definite conic matrix and $o_i$ is the activated opacity. For a tile region $\mathcal{R}$, the implementation finds the point in the tile that minimizes this quadratic form using the geometry of the projected ellipse and tile rectangle. This gives
 \begin{equation}
 q_{i,\mathcal{R}}^{\min}
 =
@@ -383,7 +387,7 @@ q_{i,\mathcal{R}}^{\min}
 \le
 m\log\!\left(\frac{o_i}{\tau_\alpha}\right),
 \end{equation}
-where $\tau_\alpha=1/255$ and $m$ is the compact-box multiplier. With $m=1$, the test retains every tile whose maximum possible alpha reaches the renderer cutoff, up to floating-point and rectangle-boundary conventions. The main speed configuration uses $m=0.75$, which is stricter and therefore approximates standard tile coverage. It preserves the standard alpha-blending rule and depth order for retained instances, while omitting weak tile instances before sorting and blending. The approximation error is controlled by the selected alpha threshold and multiplier; it is not a claim of bitwise equivalence to bbox-only rasterization.
+where $\tau_\alpha=1/255$ and $m$ is the compact-box multiplier. With $m=1$, the test retains every tile whose maximum possible alpha reaches the renderer cutoff, up to floating-point and rectangle-boundary conventions. The main speed configuration uses $m=0.75$, which is stricter and therefore approximates standard tile coverage. It preserves the standard alpha-blending rule and depth order for retained instances while omitting weak tile instances before sorting and blending. The approximation error is controlled by the selected alpha threshold and multiplier; this does not imply bitwise equivalence to bounding-box-only rasterization.
 
 The value $m=0.75$ was selected by the compact-box ablation reported in Chapter~\ref{chap:experiments}. Relative to the previous $m=1$ operating point, it reduced the nine-scene mean training time while preserving the reported PSNR, SSIM, and LPIPS region. This empirical quality check is necessary because $m<1$ no longer provides the strict cutoff-equivalence guarantee available at $m=1$.
 
@@ -421,6 +425,6 @@ Compact rasterization complements structure control. Structure control reduces t
 
 \section{Putting the Components Together}
 
-The components are designed to reinforce each other. Score-gated densification limits early redundant growth, which reduces future rasterization and optimizer work. Pruning removes low-value or inconsistent capacity, which lowers later step cost. Compact rasterization reduces the work of retained Gaussians by avoiding negligible tile instances. The fused backend lowers the cost of gradient propagation and Adam updates for the active Gaussian set. A shorter schedule then reduces the number of times the remaining step cost is paid.
+The components are designed to reinforce each other. VCD limits early redundant growth, which reduces future rasterization and optimizer work. Pruning removes low-value or inconsistent capacity, which lowers later step cost. Compact rasterization reduces the work of retained Gaussians by avoiding negligible tile instances. The fused backend lowers the cost of gradient propagation and Adam updates for the active Gaussian set. A shorter schedule then reduces the number of times the remaining step cost is paid.
 
 This combined interpretation is important for evaluating the method. A single ablation may not capture the full effect because the components change the operating point of one another. For example, compact rasterization can make a larger Gaussian set more affordable, while better structure control can make a short schedule safer. The final system should therefore be judged by both end-to-end training time and intermediate cost indicators such as Gaussian count, tile-instance count, runtime breakdown, and reconstruction quality.

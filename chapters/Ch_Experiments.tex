@@ -1,8 +1,9 @@
 \chapter{Experiments}
 \label{chap:experiments}
 
-This chapter evaluates whether RapidGS reduces training cost without leaving the
-quality region of standard 3D Gaussian Splatting (3DGS). The experiments are
+This chapter evaluates whether RapidGS reduces training cost while remaining
+within the quality range of standard 3D Gaussian Splatting (3DGS). The
+experiments are
 organized around the thesis contributions rather than individual code changes:
 end-to-end acceleration, structure control, compact rasterization, fused
 backward/update, and cross-dataset generalization.
@@ -18,11 +19,10 @@ LPIPS, training time, wall time, peak allocated VRAM, and final Gaussian count
 are recorded. Lower LPIPS and time are better; higher PSNR and SSIM are better.
 
 Unless otherwise stated, RapidGS uses 23,000 iterations, five score views,
-compact-box multiplier $m=0.75$, score-gated densification, and late VCP. The
-main and ablation tables are one deterministic run per scene. The schedule
-sweep contains four runs per scene for the 21k and 23k settings; the remaining
-settings contain one run per scene. Results with a different score-view budget
-or compact multiplier are not treated as repeats of the main configuration.
+compact-box multiplier $m=0.75$, VCD, and late VCP. The
+main, ablation, and schedule-sweep tables contain one deterministic run per
+scene. Results with a different score-view budget or compact multiplier are
+not treated as repeats of the main configuration.
 
 \section{Main Mip-NeRF 360 Result}
 
@@ -35,7 +35,7 @@ or compact multiplier are not treated as repeats of the main configuration.
 Method & Train time (s) & PSNR & SSIM & LPIPS & Gaussians \\
 \midrule
 Original 3DGS & 1053.54 & 27.5963 & 0.8153 & 0.2138 & 2.625M \\
-Local fused reference & 235.93 & 27.9330 & 0.8200 & 0.2160 & 1.161M \\
+FastGS & 235.93 & 27.9330 & 0.8200 & 0.2160 & 1.161M \\
 RapidGS & \textbf{152.47} & \textbf{28.1586} & \textbf{0.8289} &
 \textbf{0.2073} & 1.086M \\
 \bottomrule
@@ -43,7 +43,7 @@ RapidGS & \textbf{152.47} & \textbf{28.1586} & \textbf{0.8289} &
 \end{table}
 
 RapidGS is $6.91\times$ faster than the original 3DGS baseline and 35.4\%
-faster than the local fused reference. It also improves all three mean image
+faster than FastGS. It also improves all three mean image
 quality metrics in this comparison. This establishes that the short schedule
 does not obtain speed only by accepting a lower reconstruction-quality target.
 
@@ -59,112 +59,35 @@ region: higher PSNR, shorter training time, and a smaller representation.}
 
 \section{Qualitative Comparison}
 
-Figures~\ref{fig:qualitative-garden}--\ref{fig:qualitative-treehill} compare
-aligned held-out views from all nine Mip-NeRF 360 scenes. The panels are
-resized to a common display width because the saved RapidGS main run uses a
-different output resolution from the two 30k baselines. No sharpening,
-denoising, or color correction is applied. The red rectangle marks the region
-enlarged in the second row. The additional examples were selected from
-held-out views and textured local regions where RapidGS has lower local image
-error than both baselines. They therefore illustrate favorable detail cases
-rather than an unbiased estimate of average visual quality; the aggregate
-metrics in Table~\ref{tab:main-result} provide the latter comparison.
+Figure~\ref{fig:qualitative-all-scenes} compares aligned crops from held-out
+views of all nine Mip-NeRF 360 scenes. The renderings are resized to a common
+display width because the saved RapidGS main run uses a different output
+resolution from the two 30k baselines. No sharpening, denoising, or color
+correction is applied. The examples were selected from textured local regions
+where RapidGS has lower local image error than both baselines. They therefore
+illustrate favorable detail cases rather than an unbiased estimate of average
+visual quality; the aggregate metrics in Table~\ref{tab:main-result} provide
+the latter comparison.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{figures/qualitative_garden.png}
-\caption{Qualitative comparison on the Mip-NeRF 360 garden scene. RapidGS
-retains the overall geometry and appearance of the two 30k baselines after
-23k iterations. The crop highlights thin foliage, the umbrella boundary, and
-high-frequency vegetation, where all methods exhibit some reconstruction
-artifacts.}
-\label{fig:qualitative-garden}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/qualitative_flowers.png}
-\caption{Qualitative comparison on the flowers scene. The crop contains dense
-overlapping leaves and blossoms. RapidGS preserves more of the local color and
-fine-structure variation than the two baselines in this selected view.}
-\label{fig:qualitative-flowers}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/qualitative_bicycle.png}
-\caption{Qualitative comparison on the bicycle scene. The enlarged region
-focuses on thin wheel spokes and their intersections, a challenging case for
-high-frequency geometry. RapidGS remains visually competitive with both 30k
-baselines while using the shorter schedule.}
-\label{fig:qualitative-bicycle}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/qualitative_room.png}
-\caption{Qualitative comparison on the Mip-NeRF 360 room scene. The crop
-shows the window frame, curtain boundary, and vegetation outside the window.
-RapidGS retains these structures in the same visual-quality range as 3DGS and
-the local FastGS reference while using fewer final Gaussians.}
-\label{fig:qualitative-room}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/qualitative_bonsai.png}
-\caption{Qualitative comparison on the bonsai scene. The crop highlights
-small blossom elements and repeated branch intersections. The three methods
-produce similar detail, with RapidGS avoiding a visible quality collapse under
-the reduced training budget.}
-\label{fig:qualitative-bonsai}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/qualitative_counter.png}
-\caption{Qualitative comparison on the counter scene. The enlarged region
-contains embossed glove texture, a barcode, and closely spaced tray ridges.
-RapidGS reconstructs these repeated structures comparably to the two 30k
-baselines.}
-\label{fig:qualitative-counter}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/qualitative_kitchen.png}
-\caption{Qualitative comparison on the kitchen scene. The crop emphasizes the
-woven placemat pattern, where all methods retain the dominant periodic
-structure and RapidGS remains visually comparable to the baselines.}
-\label{fig:qualitative-kitchen}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/qualitative_stump.png}
-\caption{Qualitative comparison on the stump scene. The selected crop contains
-irregular bark, thin vines, and overlapping leaves. RapidGS preserves the
-principal boundaries and texture at a quality similar to the longer
-baselines.}
-\label{fig:qualitative-stump}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/qualitative_treehill.png}
-\caption{Qualitative comparison on the treehill scene. The crop highlights
-bark texture and the bench boundary. This difficult outdoor scene shows that
-the shorter RapidGS schedule remains broadly comparable, although none of the
-methods exactly recovers the ground-truth high-frequency appearance.}
-\label{fig:qualitative-treehill}
+\includegraphics[width=\textwidth,height=0.79\textheight,keepaspectratio]{figures/qualitative_all_scenes.png}
+\caption{Qualitative comparison across all nine Mip-NeRF 360 scenes. The first
+column shows the full ground-truth test view; the remaining columns show an
+aligned crop from the ground truth, original 3DGS, FastGS, and RapidGS. The
+crops emphasize thin structures and high-frequency textures. RapidGS remains
+visually competitive with the 30k baselines while using a 23k training
+schedule.}
+\label{fig:qualitative-all-scenes}
 \end{figure}
 
 \section{Structure-Control Ablation}
 
-The structure ablation removes contribution-level mechanisms, not isolated
-implementation lines. ``No VCP'' disables only late view-consistency pruning.
-``No score gate'' retains VCP but removes the multi-view gate from
-densification. ``Gradient only'' removes both score-gated growth and VCP,
+The structure ablation evaluates complete contribution-level mechanisms rather
+than individual implementation changes. ``No VCP'' disables only late
+view-consistency pruning.
+``No VCD'' retains VCP but removes multi-view consistent densification.
+``Gradient only'' removes both VCD and VCP,
 leaving the conventional gradient-driven structure rule.
 
 \begin{table}[H]
@@ -177,15 +100,26 @@ Configuration & Time (s) & PSNR & SSIM & LPIPS & Gaussians \\
 \midrule
 Full RapidGS & 152.47 & \textbf{28.1586} & 0.8289 & 0.2073 & 1.086M \\
 No VCP & \textbf{147.35} & 28.1261 & 0.8285 & 0.2065 & 1.211M \\
-No score gate & 198.85 & 27.9790 & 0.8310 & 0.1970 & 1.816M \\
+No VCD & 198.85 & 27.9790 & 0.8310 & 0.1970 & 1.816M \\
 Gradient only & 205.07 & 28.0574 & \textbf{0.8319} & \textbf{0.1958} & 2.234M \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/structure_control_contributions.pdf}
+\caption{Factorial view of the two structure-control contributions. Horizontal
+arrows add VCD and vertical arrows add VCP. Each arrow
+reports the change relative to its source configuration. This layout exposes
+the interaction between the mechanisms without implying that the ablations
+form a single linear sequence.}
+\label{fig:structure-control-contributions}
+\end{figure}
+
 VCP is not a standalone speed optimization: its callback costs about 5.1
 seconds in the mean result, but it removes approximately 10.3\% of the final
-Gaussians and slightly improves PSNR. The score gate is the principal
+Gaussians and slightly improves PSNR. VCD is the principal
 structure-cost control. Removing it increases mean training time by 30.4\% and
 the final Gaussian count by 67.2\%. Removing both structure mechanisms
 increases time by 34.5\% and more than doubles the final Gaussian count.
@@ -196,7 +130,7 @@ memory.
 Three-scene traces on bicycle, garden, and room explain the time increase. At
 iteration 23,000, the full method averages 1.514M Gaussians, 1.518M effective
 Gaussian--tile instances, and 6.18 ms for the sampled training step. Removing
-the score gate raises these values to 2.404M, 1.805M, and 8.43 ms. The
+VCD raises these values to 2.404M, 1.805M, and 8.43 ms. The
 gradient-only variant reaches 3.089M, 1.972M, and 9.91 ms. Thus, score-render
 overhead is amortized by reducing later rasterization and backward work.
 
@@ -268,12 +202,12 @@ the main balanced setting.
 Coverage & Time (s) & PSNR & SSIM & LPIPS & GS & VRAM (GB) \\
 \midrule
 Compact & \textbf{152.47} & \textbf{28.1586} & \textbf{0.8289} & \textbf{0.2073} & 1.086M & \textbf{5.04} \\
-Bbox-only & 192.06 & 28.0873 & 0.8280 & 0.2084 & \textbf{1.065M} & 5.54 \\
+Bounding-box only & 192.06 & 28.0873 & 0.8280 & 0.2084 & \textbf{1.065M} & 5.54 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The bbox-only control uses the standard conservative three-sigma projected
+The bounding-box-only control uses the standard conservative three-sigma projected
 radius and emits every tile in the resulting rectangle. It changes no
 structure-control, loss, or optimizer setting. Compact coverage reduces mean
 training time by 20.6\% and peak allocated memory by 0.50 GB while preserving
@@ -297,14 +231,42 @@ $m$ & Time (s) & PSNR & SSIM & LPIPS \\
 \end{table}
 
 The multiplier sweep is a sensitivity analysis within the enabled compact
-path, not an on/off ablation. The values $m=0.75$ and $m=1.0$ are statistically close in this
-single-run sweep, while $m=1.25$ adds 7.0\%--7.2\% training time without a
+path, not an on/off ablation. The values $m=0.75$ and $m=1.0$ are numerically
+close in this single-run sweep, while $m=1.25$ adds 7.0\%--7.2\% training time without a
 quality gain. The result supports compact tile assignment, but it does not
 justify claiming that $0.75$ is universally optimal.
 
 \begin{table}[H]
 \centering
-\caption{Matched short-schedule ablation over nine scenes.}
+\caption{Controlled RapidGS schedule sweep over nine scenes under the main
+$m=0.75$, $K=5$ configuration.}
+\label{tab:schedule-sweep}
+\begin{tabular}{lrrrrr}
+\toprule
+Iterations & Time (s) & PSNR & SSIM & LPIPS & GS \\
+\midrule
+21k & \textbf{133.60} & 28.0245 & 0.8270 & 0.2095 & \textbf{1.073M} \\
+22k & 139.29 & 28.1163 & 0.8279 & 0.2085 & 1.082M \\
+23k & 152.47 & \textbf{28.1586} & 0.8289 & 0.2073 & 1.086M \\
+25k & 156.10 & 28.1043 & 0.8284 & 0.2059 & 1.084M \\
+27k & 167.41 & 28.1293 & \textbf{0.8297} & \textbf{0.2047} & 1.085M \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All settings change only the total iteration count, the corresponding
+position-learning-rate horizon, and the VCP end boundary. The 21k setting is
+12.4\% faster than 23k but loses 0.134 dB PSNR and degrades both SSIM and
+LPIPS. The 22k setting narrows this gap, but 23k gives the highest PSNR and a
+better balance across all three metrics. Extending the schedule to 25k or 27k
+improves LPIPS, but does not improve PSNR; 27k also costs 9.8\% more training
+time. These results support 23k as the quality-constrained operating point
+rather than the shortest or longest schedule tested.
+
+\begin{table}[H]
+\centering
+\caption{Matched 23k versus 30k schedule control under the main RapidGS
+configuration.}
 \label{tab:schedule-ablation}
 \begin{tabular}{lrrrrr}
 \toprule
@@ -328,7 +290,7 @@ The fused CUDA path performs gradient propagation, Adam moment updates, and
 parameter updates in one backend operation. A reduced 5,000-Gaussian fixture
 checks the fused Adam mutation against the explicit Adam equation; the maximum
 absolute parameter error is below $10^{-6}$. Central finite differences also
-confirm the gradient direction for all parameter groups, although geometric
+confirm the gradient directions for all parameter groups, although geometric
 parameters are sensitive to visibility and tile-boundary discontinuities.
 
 \begin{table}[H]
@@ -375,7 +337,7 @@ appropriate evidence for backend execution speed.
 Method & Time (s) & PSNR & SSIM & LPIPS & Gaussians \\
 \midrule
 3DGS & 613.18 & 22.2682 & 0.7963 & 0.2301 & 1.421M \\
-Fused reference & 242.21 & 23.5607 & 0.8492 & 0.1687 & 1.531M \\
+FastGS & 242.21 & 23.5607 & 0.8492 & 0.1687 & 1.531M \\
 RapidGS & \textbf{89.28} & \textbf{23.8815} & \textbf{0.8523} &
 \textbf{0.1680} & \textbf{0.620M} \\
 \bottomrule
@@ -391,7 +353,7 @@ RapidGS & \textbf{89.28} & \textbf{23.8815} & \textbf{0.8523} &
 Method & Time (s) & PSNR & SSIM & LPIPS & Gaussians \\
 \midrule
 3DGS & 1153.88 & 29.7727 & 0.9059 & 0.2386 & 2.427M \\
-Fused reference & 291.94 & 29.8331 & 0.9064 & \textbf{0.2373} & 2.542M \\
+FastGS & 291.94 & 29.8331 & 0.9064 & \textbf{0.2373} & 2.542M \\
 RapidGS & \textbf{86.49} & \textbf{29.9019} & \textbf{0.9067} &
 0.2417 & \textbf{0.777M} \\
 \bottomrule
@@ -399,10 +361,10 @@ RapidGS & \textbf{86.49} & \textbf{29.9019} & \textbf{0.9067} &
 \end{table}
 
 RapidGS transfers without dataset-specific threshold tuning. On Tanks and
-Temples it is $6.87\times$ faster than 3DGS and $2.71\times$ faster than the
-fused reference while improving the mean quality metrics. On Deep Blending it
+Temples it is $6.87\times$ faster than 3DGS and $2.71\times$ faster than
+FastGS while improving the mean quality metrics. On Deep Blending it
 is $13.34\times$ and $3.38\times$ faster, respectively, with slightly higher
-PSNR and SSIM; LPIPS is 0.0044 worse than the fused reference. The latter is a
+PSNR and SSIM; LPIPS is 0.0044 worse than FastGS. The latter is a
 small but explicit perceptual-quality trade-off and should not be hidden by the
 time reduction.
 
@@ -418,7 +380,7 @@ Table~\ref{tab:db-generalization}.
 
 \section{Summary}
 
-The experiments support the thesis-level decomposition. Score-gated structure
+The experiments support the thesis-level decomposition. VCD-based structure
 control prevents expensive model growth, VCP provides late model cleanup,
 compact rasterization limits tile work, the fused backend reduces per-step
 update cost, and the 23k schedule limits the number of steps. No single

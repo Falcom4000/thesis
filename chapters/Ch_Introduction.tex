@@ -23,9 +23,7 @@ RapidGS follows this principle. First, it controls Gaussian growth and deletion 
 
 \section{Scope}
 
-The main pipeline in this thesis uses COLMAP/SfM initialization and RGB-only supervision. Optional AnySplat Gaussian PLY initialization is treated as a separate initialization path and later ablation factor. This distinction matters because a feed-forward initializer has its own runtime, coordinate-alignment requirements, and failure modes. The main result should therefore be read as an acceleration of the standard optimization-style 3DGS training pipeline, not as a system that depends on an external prior.
-
-This draft intentionally leaves several parts for later completion. Related work is represented as a chapter scaffold. Full per-scene tables, ablation results, formal figures, and expanded citation discussion will be added after the remaining experiments are finalized.
+The main pipeline in this thesis uses COLMAP/SfM initialization and RGB-only supervision. Optional AnySplat Gaussian PLY initialization is treated as a separate initialization path and ablation factor. This distinction matters because a feed-forward initializer has its own runtime, coordinate-alignment requirements, and failure modes. The main result should therefore be read as an acceleration of the standard optimization-style 3DGS training pipeline, not as a system that depends on an external prior.
 
 \section{Contributions}
 
@@ -33,6 +31,6 @@ This thesis makes three main contributions.
 
 \begin{enumerate}
   \item It introduces a cost-aware structure-control perspective for 3DGS training. Multi-view high-error contribution statistics gate densification and support later pruning, reducing redundant growth driven by single-view gradient spikes.
-  \item It presents a fused CUDA training backend that preserves the PyTorch-side RGB loss while moving Gaussian backward propagation, optimizer update, densification statistics, and dynamic state maintenance into a specialized per-Gaussian execution path.
+  \item It presents a fused CUDA training backend that preserves the PyTorch-side RGB loss while moving Gaussian backward propagation, optimizer updates, densification statistics, and dynamic state maintenance into a specialized per-Gaussian execution path.
   \item It integrates compact rasterization and a short quality-constrained schedule to reduce tile-instance work and total iteration count while preserving standard 3DGS representation and rendering semantics.
 \end{enumerate}

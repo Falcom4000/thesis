@@ -11,7 +11,7 @@ where $\mathbf{I}_v$ is the image for view $v$ and $\Pi_v$ denotes its camera pa
 \begin{equation}
 \mathcal{G}=\{G_i\}_{i=1}^{N},
 \end{equation}
-which can render training and novel views through standard 3DGS rasterization.
+which supports rendering of both training and novel views through standard 3DGS rasterization.
 
 The formulation is intentionally single-scene and optimization-based. Each scene is trained independently, and all speed measurements in this thesis refer to the scene-specific optimization loop unless an initialization cost is explicitly stated. This distinction is important because a method can accelerate the optimizer itself, provide a better starting point, or change both. RapidGS primarily targets the optimizer and rasterization path after the initial Gaussian set has been constructed.
 
@@ -55,7 +55,7 @@ Y_b(\mathbf{d}_{i,v})\mathbf{c}_{i,b},
 \end{equation}
 where $Y_b$ is a spherical-harmonic basis function and $B_t$ is the number of active bases at training step $t$. The active basis count can increase over training so that early optimization focuses on low-frequency appearance before higher-order view-dependent terms are fully enabled.
 
-The $1/2$ offset follows the common 3DGS coefficient convention. The maintained fused implementation computes this raw SH value in preprocessing and applies a component-wise non-negative clamp when the color is loaded by the blend kernel. Backward uses the corresponding zero derivative for a channel whose raw SH value is negative. The training render is not finally clamped above at one; inference output is clamped to $[0,1]$ after rasterization. This is an implementation-level numerical convention rather than a new color representation.
+The $1/2$ offset follows the common 3DGS coefficient convention. The maintained fused implementation computes this raw SH value during preprocessing and applies a component-wise non-negative clamp when the blend kernel loads the color. Backward propagation uses a zero derivative for any channel whose raw SH value is negative. The training render has no final upper clamp at one, whereas the inference output is clamped to $[0,1]$ after rasterization. This is an implementation-level numerical convention rather than a new color representation.
 
 \section{Projection and Alpha Blending}
 
